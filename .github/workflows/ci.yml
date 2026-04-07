@@ -1,0 +1,46 @@
+name: Build SingularityMC
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build all modules
+        run: ./gradlew build
+        shell: bash
+
+      - name: Run unit tests
+        run: ./gradlew test
+        shell: bash
+
+      - name: Verify agent Shadow JAR manifest
+        run: |
+          unzip -p singularity-agent/build/libs/singularity-agent.jar META-INF/MANIFEST.MF | grep "Premain-Class"
+        shell: bash
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-artifacts
+          path: |
+            singularity-agent/build/libs/*.jar
+            **/build/reports/tests/

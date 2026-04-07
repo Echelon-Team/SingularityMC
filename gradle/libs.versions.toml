@@ -1,0 +1,60 @@
+[versions]
+kotlin = "2.3.20"
+compose = "1.10.3"
+coroutines = "1.10.2"
+ktor = "3.4.2"
+serialization = "1.10.0"
+slf4j = "2.0.17"
+logback = "1.5.32"
+asm = "9.9.1"
+shadow = "9.4.1"
+junit = "6.0.3"
+mixin = "0.8.7"
+tiny-remapper = "0.13.1"
+mapping-io = "0.8.0"
+
+[libraries]
+# Kotlin Coroutines
+coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+coroutines-swing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "coroutines" }
+coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+
+# Kotlinx Serialization
+serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+
+# HTTP (Ktor)
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+
+# Bytecode (ASM) — dodawane do agenta w Subsystemie 2
+asm-core = { module = "org.ow2.asm:asm", version.ref = "asm" }
+asm-commons = { module = "org.ow2.asm:asm-commons", version.ref = "asm" }
+asm-tree = { module = "org.ow2.asm:asm-tree", version.ref = "asm" }
+
+# Mixin + Remapping (custom repos — settings.gradle.kts)
+mixin = { module = "org.spongepowered:mixin", version.ref = "mixin" }
+tiny-remapper = { module = "net.fabricmc:tiny-remapper", version.ref = "tiny-remapper" }
+mapping-io = { module = "net.fabricmc:mapping-io", version.ref = "mapping-io" }
+
+# Logging
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+
+# Testing (JUnit 6 ships Jupiter + Platform + Vintage lockstep na tej samej wersji)
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
+
+[bundles]
+ktor-client = ["ktor-client-core", "ktor-client-cio", "ktor-client-content-negotiation", "ktor-serialization-json"]
+asm = ["asm-core", "asm-commons", "asm-tree"]
+logging = ["slf4j-api", "logback-classic"]
+testing = ["junit-jupiter", "junit-platform-launcher", "coroutines-test"]
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+compose = { id = "org.jetbrains.compose", version.ref = "compose" }
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }

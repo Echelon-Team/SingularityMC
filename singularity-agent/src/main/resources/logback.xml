@@ -1,0 +1,15 @@
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>[%d{HH:mm:ss}] [SingularityMC/%level] %logger{20} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Wycisz verbose logowanie z bibliotek -->
+    <logger name="org.spongepowered" level="WARN"/>
+    <logger name="net.fabricmc" level="WARN"/>
+
+    <root level="DEBUG">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>

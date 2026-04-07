@@ -1,0 +1,144 @@
+# ============================================================
+# SingularityMC .gitignore
+# Polityka: na GitHuba leci TYLKO czysty kod aplikacji.
+# Wszystko robocze (plany, speci, claude config, docs) — ignore.
+# Zostawione: kod zrodlowy, gradle wrapper, README/LICENSE w root,
+# resources uzywane przez aplikacje (yaml/json/png w src/main/resources).
+# ============================================================
+
+# --- Claude Code / AI tooling ---
+.claude/
+.cursor/
+.aider*
+.windsurf/
+.continue/
+
+# --- Dokumentacja robocza (plany, speci, visual companion) ---
+# Wszystko w docs/ jest lokalne. Gdyby pojawil sie plik ktory ma
+# isc do repo (np. docs/CONTRIBUTING.md) — dodac allowlist regula.
+docs/
+
+# --- Gradle ---
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# --- Kotlin / Java build output ---
+out/
+target/
+bin/
+*.class
+*.kotlin_module
+*.hprof
+hs_err_pid*
+replay_pid*
+
+# --- JARs: ignoruj wszystkie, ale wyjatki dla wrapper i lokalnych libs ---
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+!libs/*.jar
+
+# --- IDE: IntelliJ IDEA ---
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# --- IDE: Eclipse ---
+.eclipse/
+.settings/
+.project
+.classpath
+.factorypath
+.apt_generated/
+
+# --- IDE: VS Code ---
+.vscode/
+*.code-workspace
+
+# --- IDE: NetBeans ---
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# --- IDE: Fleet ---
+.fleet/
+
+# --- OS: macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# --- OS: Windows ---
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# --- OS: Linux ---
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# --- Logi ---
+*.log
+*.log.*
+logs/
+
+# --- Runtime / minecraft test env ---
+run/
+test-output/
+reports/
+singularity-run/
+.minecraft/
+
+# --- Credentials / secrets / keys ---
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.keystore
+*.jks
+*.p12
+*.pfx
+credentials.json
+client_secrets.json
+
+# --- Temp / backup / editor swap ---
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*.tmp
+.~lock.*
+
+# --- Test artifacts ---
+*.exec
+coverage/
+jacoco.exec
+
+# --- Native image / profiling ---
+*.dump
+*.map
+.kotlin/
+
+# --- Node (na wypadek narzedzi pomocniczych) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
