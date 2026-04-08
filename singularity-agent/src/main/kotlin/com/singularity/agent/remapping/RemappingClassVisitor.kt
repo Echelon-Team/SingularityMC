@@ -71,8 +71,21 @@ object RemappingClassVisitor {
         override fun map(internalName: String): String =
             engine.resolveClass(internalName)
 
-        override fun mapMethodName(owner: String, name: String, descriptor: String): String =
-            engine.resolveMethod(owner, name, descriptor)
+        override fun mapMethodName(owner: String, name: String, descriptor: String): String {
+            // AD7 guard (Sub 2b): NIGDY nie remapuj <init> (constructors) ani <clinit>
+            // (static initializers). Jesli mapping table ma wpis dla special method,
+            // to jest bug w .tiny generator lub ktos manualnie zepsul mapping file.
+            //
+            // Zrenameowany constructor → ClassFormatError ("Method <init> in class ...
+            // has illegal signature") bo JVM wymaga ze constructors sa named "<init>".
+            // Zrenameowany clinit → klasa nigdy nie inicjalizowana, static fields zostaja
+            // default, runtime crashe w nieprzewidywalnych miejscach.
+            //
+            // Guard na name.startsWith("<") łapie OBA special methods plus teoretyczne
+            // przyszłe <special> methods w przyszłych wersjach classfile format.
+            if (name.startsWith("<")) return name
+            return engine.resolveMethod(owner, name, descriptor)
+        }
 
         override fun mapFieldName(owner: String, name: String, descriptor: String): String =
             engine.resolveField(owner, name)
