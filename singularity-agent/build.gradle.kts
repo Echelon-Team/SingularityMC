@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.shadow)
 }
 
@@ -12,11 +13,14 @@ dependencies {
     implementation(project(":singularity-common"))
     implementation(libs.bundles.logging)
 
-    // Bytecode libraries — dodawane w Subsystemie 2 (Agent + Compat):
-    // implementation(libs.bundles.asm)
-    // implementation(libs.mixin)
-    // implementation(libs.tiny.remapper)
-    // implementation(libs.mapping.io)
+    // Bytecode libraries — aktywowane w Sub 2a
+    implementation(libs.bundles.asm)
+    implementation(libs.mixin)
+    implementation(libs.tiny.remapper)
+    implementation(libs.mapping.io)
+
+    // JSON serialization dla ModuleDescriptor parsowania (Sub 2a Task 1)
+    implementation(libs.serialization.json)
 
     testImplementation(libs.bundles.testing)
 }
