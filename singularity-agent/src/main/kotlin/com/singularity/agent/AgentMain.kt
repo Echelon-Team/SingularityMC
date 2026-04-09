@@ -3,6 +3,7 @@ package com.singularity.agent
 import com.singularity.agent.bootstrap.CacheVersionManager
 import com.singularity.agent.bootstrap.MappingTableLoader
 import com.singularity.agent.bootstrap.McJarScanner
+import com.singularity.agent.bootstrap.ModBootstrap
 import com.singularity.agent.bootstrap.VersionMetadata
 import com.singularity.agent.cache.CacheKey
 import com.singularity.agent.cache.TransformCache
@@ -10,10 +11,12 @@ import com.singularity.agent.classloader.JarRegistry
 import com.singularity.agent.classloader.SingularityClassLoader
 import com.singularity.agent.mixin.EngineMixinBytecodeSource
 import com.singularity.agent.mixin.SingularityMixinService
+import com.singularity.agent.mod.ModInitializer
 import com.singularity.agent.module.ContractValidator
 import com.singularity.agent.module.LoadedModule
 import com.singularity.agent.module.ModuleLoader
 import com.singularity.agent.pipeline.SingularityTransformer
+import com.singularity.agent.registry.SingularityModRegistry
 import com.singularity.agent.remapping.InheritanceTree
 import com.singularity.agent.remapping.RemappingEngine
 import org.slf4j.LoggerFactory
@@ -30,7 +33,7 @@ import java.util.ServiceLoader
  * Ladowany przez JVM z flaga -javaagent:singularity-agent.jar=<instanceDir>.
  * Metoda premain() wywolywana PRZED main() Minecrafta.
  *
- * Sub 2b FULL bootstrap sequence (14 kroków, AD1-AD8 implementation):
+ * Sub 2b FULL bootstrap sequence (steps 1-14, AD1-AD8 implementation):
  * 1. Parse args → instanceDir
  * 2. Version metadata (agentVer z MANIFEST)
  * 3. Load compat module JAR → contract validation (w try/finally z temp cleanup)
@@ -46,8 +49,13 @@ import java.util.ServiceLoader
  * 13. Set Thread.contextClassLoader = SingularityClassLoader (dla MC main thread)
  * 14. Cleanup stale cache dirKey's + write version.properties
  *
- * UWAGA: `MixinBootstrap.init()` NIE jest wywolywany w Sub 2b — defer do Sub 2c gdy
- * ModDiscovery dostarczy prawdziwe mixin configs (bootstrap bez configs = no-op).
+ * Sub 2c mod loading steps (15-20):
+ * 15. Build SingularityModRegistry + ModInitializer (stub callbacki — real w Sub 2d/2e)
+ * 16. ModBootstrap.loadMods — discovery, parse, dependency resolution, duplicates
+ * 17. Per discovered mod: classLoader.addModJar + MixinConfigScanner.scanJar
+ * 18. Mixins.addConfiguration per collected mixin config
+ * 19. MixinBootstrap.init() — wyłącznie gdy są configs
+ * 20. Register mods w SingularityModRegistry + ModInitializer.initialize (fazowa 1a→1b→2→3→4)
  *
  * BLOCKER fix (edge-case-hunter review): temp mapping dir jest lifecycled przez try/finally
  * + deleteRecursively zeby nie leakowac ~30-150MB per-launch w java.io.tmpdir.
@@ -68,6 +76,16 @@ object AgentMain {
         "bridges",
         "hooks"
     )
+
+    /**
+     * Global mod registry — zainicjalizowany w bootstrap(), wypełniany w Sub 2c ModBootstrap.
+     * Dostępny dla shimów w module compat (Sub 2d) przez bridge contracts.
+     *
+     * Nullable bo bootstrap może nie wystartować w standalone mode (brak instance args).
+     */
+    @Volatile
+    var modRegistry: SingularityModRegistry? = null
+        private set
 
     @JvmStatic
     fun premain(agentArgs: String?, inst: Instrumentation) {
@@ -221,8 +239,43 @@ object AgentMain {
             cacheVersionManager.writeCurrent(agentVersion, moduleVersion)
 
             logger.info(
-                "Agent bootstrap complete: tree={} classes, jarRegistry={} classes, agentVer={}, moduleVer={}",
+                "Agent bootstrap complete (Sub 2b): tree={} classes, jarRegistry={} classes, agentVer={}, moduleVer={}",
                 tree.size, jarRegistry.size, agentVersion, moduleVersion
+            )
+
+            // Sub 2c: Mod loading pipeline
+            // Step 15: SingularityModRegistry + stub ModInitializer (real wire w Sub 2d/2e)
+            val registry = SingularityModRegistry()
+            modRegistry = registry
+            val initializer = ModInitializer(
+                onPhase1a = { mod ->
+                    logger.debug("Phase 1a (stub): Forge registry events for '{}' — real wire Sub 2d", mod.modId)
+                },
+                onPhase1b = { mod ->
+                    logger.debug("Phase 1b (stub): Fabric onInitialize for '{}' — real wire Sub 2d", mod.modId)
+                },
+                onPhase2 = { mod ->
+                    logger.debug("Phase 2 (stub): FMLCommonSetup for '{}' — real wire Sub 2d", mod.modId)
+                },
+                onPhase3 = { mod ->
+                    logger.debug("Phase 3 (stub): InterMod events for '{}' — real wire Sub 2d", mod.modId)
+                },
+                onPhase4 = {
+                    logger.info("Phase 4 (stub): Load Complete — real wire Sub 2d")
+                }
+            )
+
+            // Steps 16-20: discovery → parse → deps → dedupe → classloader wire → mixin wire → registry → phased init
+            val modsDir = instanceDir.resolve("mods")
+            val modLoadResult = ModBootstrap.loadMods(
+                modsDir = modsDir,
+                addModJar = singularityClassLoader::addModJar,
+                registry = registry,
+                initializer = initializer
+            )
+            logger.info(
+                "Sub 2c mod loading complete: {} mods registered, {} mixin configs loaded",
+                modLoadResult.registeredCount, modLoadResult.loadedMixinConfigs.size
             )
         } finally {
             // BLOCKER fix (edge-case-hunter): cleanup temp mapping dir gwarantowany

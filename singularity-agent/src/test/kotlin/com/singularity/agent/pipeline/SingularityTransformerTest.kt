@@ -197,6 +197,13 @@ class SingularityTransformerTest {
             // Na Windows bez tego: race → open handle → DirectoryNotEmptyException w test teardown.
             executor.shutdown()
             executor.awaitTermination(10, TimeUnit.SECONDS)
+            // Windows NTFS trzyma lock chwilę po close() — awaitTermination nie wystarcza
+            // bo FileOutputStream/BufferedOutputStream w writeBytes() są już closed ale
+            // Windows delay NTFS lock release. System.gc() wymusza finalizery + krótki sleep
+            // daje NTFS czas na zwolnienie lock. Bez tego @TempDir cleanup flaky na Windows
+            // z DirectoryNotEmptyException (memory sub2b_learnings #14).
+            System.gc()
+            Thread.sleep(200)
         }
 
         assertEquals(threadCount, results.size)
