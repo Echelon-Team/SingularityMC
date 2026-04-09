@@ -193,7 +193,10 @@ class SingularityTransformerTest {
             }
             assertTrue(latch.await(10, TimeUnit.SECONDS))
         } finally {
+            // Musimy AWAIT shutdown zanim JUnit @TempDir sprobuje delete cache files.
+            // Na Windows bez tego: race → open handle → DirectoryNotEmptyException w test teardown.
             executor.shutdown()
+            executor.awaitTermination(10, TimeUnit.SECONDS)
         }
 
         assertEquals(threadCount, results.size)
