@@ -93,4 +93,102 @@ class InheritanceTreeTest {
 
         assertEquals(100, tree.size)
     }
+
+    // -------------------------------------------------------------------------
+    // Sub 2b Task 0.3: getChildren + getAllRegisteredClasses + cycle detection
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `getChildren returns direct children only`() {
+        val tree = InheritanceTree()
+        tree.register("Entity", "java/lang/Object", emptyList())
+        tree.register("LivingEntity", "Entity", emptyList())
+        tree.register("Player", "LivingEntity", emptyList())
+        tree.register("Zombie", "LivingEntity", emptyList())
+
+        val entityChildren = tree.getChildren("Entity")
+        assertEquals(1, entityChildren.size)
+        assertTrue("LivingEntity" in entityChildren)
+
+        val livingEntityChildren = tree.getChildren("LivingEntity")
+        assertEquals(2, livingEntityChildren.size)
+        assertTrue("Player" in livingEntityChildren)
+        assertTrue("Zombie" in livingEntityChildren)
+    }
+
+    @Test
+    fun `getChildren returns empty for class with no children`() {
+        val tree = InheritanceTree()
+        tree.register("Leaf", "java/lang/Object", emptyList())
+        assertTrue(tree.getChildren("Leaf").isEmpty())
+    }
+
+    @Test
+    fun `getChildren returns empty for unregistered class`() {
+        val tree = InheritanceTree()
+        assertTrue(tree.getChildren("Unknown").isEmpty())
+    }
+
+    @Test
+    fun `getAllRegisteredClasses returns all registered class names`() {
+        val tree = InheritanceTree()
+        tree.register("A", "java/lang/Object", emptyList())
+        tree.register("B", "A", emptyList())
+        tree.register("C", "B", emptyList())
+
+        val all = tree.getAllRegisteredClasses()
+        assertEquals(3, all.size)
+        assertTrue("A" in all)
+        assertTrue("B" in all)
+        assertTrue("C" in all)
+    }
+
+    @Test
+    fun `getAllRegisteredClasses returns empty set for empty tree`() {
+        val tree = InheritanceTree()
+        assertTrue(tree.getAllRegisteredClasses().isEmpty())
+    }
+
+    @Test
+    fun `getAncestors detects cycles and stops walk`() {
+        val tree = InheritanceTree()
+        // Artificial cycle: A → B → A (nieprawidlowy DAG — ale mozliwy bug w modul)
+        tree.register("A", "B", emptyList())
+        tree.register("B", "A", emptyList())
+
+        // Musi nie wpasc w nieskonczona petle
+        val ancestors = tree.getAncestors("A")
+        // Walk: A → getParent=B (add B to visited + ancestors), B → getParent=A (already
+        // in visited, break). Result: ["B"]. Sanity: < 10 iteracji.
+        assertTrue(ancestors.size < 10, "Walk must terminate on cycle, got ${ancestors.size} ancestors")
+    }
+
+    @Test
+    fun `concurrent registration of same class with different parents is safe`() {
+        // Flag #7 z test-quality review — prawdziwy race test, nie fake distinct-keys test.
+        val tree = InheritanceTree()
+        val threadCount = 50
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(threadCount)
+        val latch = java.util.concurrent.CountDownLatch(threadCount)
+
+        try {
+            for (i in 0 until threadCount) {
+                executor.submit {
+                    try {
+                        tree.register("contested/Class", "parent/$i", emptyList())
+                    } finally {
+                        latch.countDown()
+                    }
+                }
+            }
+            assertTrue(latch.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        } finally {
+            executor.shutdown()
+        }
+
+        // Final state: jeden z 50 parentow musi byc zarejestrowany (no corruption)
+        val parent = tree.getParent("contested/Class")
+        assertNotNull(parent, "Class must be registered")
+        assertTrue(parent!!.startsWith("parent/"), "Parent must be one of the 50 registered values")
+    }
 }

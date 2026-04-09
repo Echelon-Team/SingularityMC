@@ -34,6 +34,16 @@ class InheritanceTree {
 
     private val classes = ConcurrentHashMap<String, ClassInfo>()
 
+    /**
+     * Reverse index: parent → zbior bezposrednich children (Sub 2b Task 0.3).
+     * Budowany inkrementalnie przy kazdym register() wywolaniu.
+     * Uzywany przez ParallelTreeTransformer do parent→child top-down traversal.
+     *
+     * Thread-safe: ConcurrentHashMap<String, MutableSet<String>> z ConcurrentHashMap.newKeySet()
+     * dla inner set (thread-safe dodawanie children z wielu watkow).
+     */
+    private val reverseChildrenIndex = ConcurrentHashMap<String, MutableSet<String>>()
+
     val size: Int get() = classes.size
 
     /**
@@ -45,6 +55,13 @@ class InheritanceTree {
      */
     fun register(internalName: String, parentInternalName: String?, interfaces: List<String>) {
         classes[internalName] = ClassInfo(parentInternalName, interfaces)
+        // Sub 2b Task 0.3: reverse children index — parent → set of direct children.
+        // Budujemy inkrementalnie przy kazdej rejestracji dziecka.
+        if (parentInternalName != null) {
+            reverseChildrenIndex
+                .getOrPut(parentInternalName) { ConcurrentHashMap.newKeySet() }
+                .add(internalName)
+        }
     }
 
     /**
@@ -62,11 +79,21 @@ class InheritanceTree {
     /**
      * Zwraca pelny lancuch przodkow od bezposredniego parenta do java/lang/Object.
      * NIE zawiera samej klasy. Zwraca pusta liste jesli klasa nie jest zarejestrowana.
+     *
+     * Sub 2b Task 0.3: cycle detection przez `visited` set. JVM class hierarchy to DAG,
+     * wiec cykl jest niemozliwy w normalnym runtime — ale bug w module (manualny edit)
+     * lub race condition moze spowodowac cykl. Bez cycle detection getAncestors zawisa
+     * w nieskonczonej petli (flag #12).
      */
     fun getAncestors(internalName: String): List<String> {
         val ancestors = mutableListOf<String>()
+        val visited = mutableSetOf<String>()
         var current = getParent(internalName)
         while (current != null) {
+            if (!visited.add(current)) {
+                // Cycle detected — break walk (zwracamy co do tej pory zebrane)
+                break
+            }
             ancestors.add(current)
             current = getParent(current)
         }
@@ -75,4 +102,24 @@ class InheritanceTree {
 
     fun isRegistered(internalName: String): Boolean =
         classes.containsKey(internalName)
+
+    /**
+     * Zwraca liste bezposrednich dzieci (klasy ktore rozszerzaja podany parent).
+     * Nie zawiera grandchildren. Jesli klasa nie ma dzieci lub nie jest zarejestrowana,
+     * zwraca pusta liste.
+     *
+     * Uzywane przez ParallelTreeTransformer (Sub 2b Task 9) do parent→child traversal.
+     *
+     * @param parentInternalName internal name parent klasy
+     * @return snapshot (copy) listy bezposrednich children — safe dla concurrent mod
+     */
+    fun getChildren(parentInternalName: String): List<String> =
+        reverseChildrenIndex[parentInternalName]?.toList() ?: emptyList()
+
+    /**
+     * Zwraca zbior WSZYSTKICH zarejestrowanych klas w drzewie (snapshot).
+     * Uzywany przez ParallelTreeTransformer do iteracji po wszystkich klasach
+     * podczas bootstrap transform.
+     */
+    fun getAllRegisteredClasses(): Set<String> = classes.keys.toSet()
 }
