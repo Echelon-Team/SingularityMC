@@ -4,6 +4,7 @@ import com.singularity.agent.bootstrap.CacheVersionManager
 import com.singularity.agent.bootstrap.MappingTableLoader
 import com.singularity.agent.bootstrap.McJarScanner
 import com.singularity.agent.bootstrap.VersionMetadata
+import com.singularity.agent.cache.CacheKey
 import com.singularity.agent.cache.TransformCache
 import com.singularity.agent.classloader.JarRegistry
 import com.singularity.agent.classloader.SingularityClassLoader
@@ -205,7 +206,15 @@ object AgentMain {
             Thread.currentThread().contextClassLoader = singularityClassLoader
 
             // Step 14: Cache cleanup + write version
-            val activeDirKeys = transformer.getAllDirKeys()
+            // Compute dirKeys z aktywnych jarHashes, NIE z transformer.dirKeyCache —
+            // podczas bootstrap'u zero klas jeszcze nie bylo transformed, wiec
+            // transformer.getAllDirKeys() zwraca pusty set. Cleanup byl no-op.
+            // Fix (edge-case-hunter final review #1): computujemy dirKey dla KAZDEGO
+            // zarejestrowanego JAR'a PRZED startem transform'ow → cleanup zna aktualne
+            // entries i usuwa te ze stalych wersji (agentVer/moduleVer/jarHash roznice).
+            val activeDirKeys = jarRegistry.getAllJarHashes()
+                .map { jarHash -> CacheKey.dirKey(agentVersion, moduleVersion, jarHash) }
+                .toSet()
             if (activeDirKeys.isNotEmpty()) {
                 transformCache.cleanup(activeDirKeys)
             }

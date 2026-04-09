@@ -128,7 +128,12 @@ class SingularityClassLoader(
             transformFunction(internalName, source.bytes)
         } catch (e: Exception) {
             logger.error("Transform failed for {}: {}", internalName, e.message, e)
-            throw ClassNotFoundException("Transform failed for $name", e)
+            // Fail-fast (edge-case-hunter final review #2): LinkageError propaguje sie
+            // w gore i NIE jest catch'owany przez loadClass (tam catch tylko
+            // ClassNotFoundException). Bez tego: fallback do parent.loadClass ktory
+            // mogl zaladowac pre-remap wersje → cascade NoSuchMethodError.
+            // To respektuje fail-fast policy SingularityTransformer.
+            throw LinkageError("Transform failed for $name").apply { initCause(e) }
         }
 
         // defineClass z mojmap name — bytes.internalName musi byc == internalName

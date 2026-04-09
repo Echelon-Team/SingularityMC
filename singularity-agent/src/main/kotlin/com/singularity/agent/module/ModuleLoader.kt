@@ -132,11 +132,14 @@ class LoadedModule(
     /**
      * Czyta zawartosc wpisu jako ByteArray.
      * @throws IllegalArgumentException jesli wpis nie istnieje
+     *
+     * Uzywa `.use{}` na InputStream zeby nie trzymac Inflater w JarFile pool
+     * (edge-case-hunter final review #3 — pre-existing Sub 2a flaw).
      */
     fun readEntry(entryPath: String): ByteArray {
         val entry = jarFile.getJarEntry(entryPath)
             ?: throw IllegalArgumentException("Entry '$entryPath' not found in ${path.fileName}")
-        return jarFile.getInputStream(entry).readBytes()
+        return jarFile.getInputStream(entry).use { it.readBytes() }
     }
 
     /**
