@@ -19,6 +19,7 @@ dependencies {
     implementation(libs.guava)  // runtime dep Mixin 0.8.7 (ImmutableList w MixinEnvironment)
     implementation(libs.tiny.remapper)
     implementation(libs.mapping.io)
+    implementation(libs.jetbrains.annotations)  // wymagane przez mapping-io 0.7.1
 
     // JSON serialization dla ModuleDescriptor parsowania (Sub 2a Task 1)
     implementation(libs.serialization.json)

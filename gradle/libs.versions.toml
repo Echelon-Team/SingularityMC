@@ -11,7 +11,8 @@ shadow = "9.4.1"
 junit = "6.0.3"
 mixin = "0.8.7"
 tiny-remapper = "0.13.1"
-mapping-io = "0.8.0"
+mapping-io = "0.7.1"
+jetbrains-annotations = "24.0.0"
 guava = "33.3.1-jre"
 
 [libraries]
@@ -41,6 +42,9 @@ mapping-io = { module = "net.fabricmc:mapping-io", version.ref = "mapping-io" }
 
 # Guava — wymagana przez Mixin 0.8.7 runtime (com.google.common.collect.ImmutableList)
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
+
+# JetBrains annotations — wymagane przez mapping-io 0.7.1 (@Nullable w sygnaturach)
+jetbrains-annotations = { module = "org.jetbrains:annotations", version.ref = "jetbrains-annotations" }
 
 # Logging
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
