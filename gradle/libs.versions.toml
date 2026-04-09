@@ -12,6 +12,7 @@ junit = "6.0.3"
 mixin = "0.8.7"
 tiny-remapper = "0.13.1"
 mapping-io = "0.8.0"
+guava = "33.3.1-jre"
 
 [libraries]
 # Kotlin Coroutines
@@ -37,6 +38,9 @@ asm-tree = { module = "org.ow2.asm:asm-tree", version.ref = "asm" }
 mixin = { module = "org.spongepowered:mixin", version.ref = "mixin" }
 tiny-remapper = { module = "net.fabricmc:tiny-remapper", version.ref = "tiny-remapper" }
 mapping-io = { module = "net.fabricmc:mapping-io", version.ref = "mapping-io" }
+
+# Guava — wymagana przez Mixin 0.8.7 runtime (com.google.common.collect.ImmutableList)
+guava = { module = "com.google.guava:guava", version.ref = "guava" }
 
 # Logging
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }

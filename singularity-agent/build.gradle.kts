@@ -16,6 +16,7 @@ dependencies {
     // Bytecode libraries — aktywowane w Sub 2a
     implementation(libs.bundles.asm)
     implementation(libs.mixin)
+    implementation(libs.guava)  // runtime dep Mixin 0.8.7 (ImmutableList w MixinEnvironment)
     implementation(libs.tiny.remapper)
     implementation(libs.mapping.io)
 
