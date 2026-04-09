@@ -74,23 +74,50 @@ class ReflectionInterceptor(
     }
 
     /**
-     * TODO Sub 2b: implementacja reverse index.
+     * Szuka metody w tabeli bez znajomosci owner klasy. Uzywa reverse index
+     * zbudowanego w MappingTable.init (Sub 2b Task 0.2).
      *
-     * Szuka metody w tabeli bez znajomosci owner klasy.
-     * MappingTable przechowuje klucze jako "owner/methodNameDescriptor" — reverse
-     * lookup wymaga dodatkowej struktury (Map<methodName, List<"owner/methodNameDescriptor">>)
-     * budowanej przy init MappingTable. Do dodania w Sub 2b.
+     * Jesli ta sama simple name mapuje na WIELE mojmap names (np. dwie rozne klasy
+     * obie maja m_5803_ z roznymi mojmapami), heurystycznie zwracamy PIERWSZY
+     * najczestszy mojmap. Mod ktory uzywa reflection na SRG name bez owner'a
+     * juz jest w nieoczywistym terytorium — best effort.
      */
-    @Suppress("UNUSED_PARAMETER")
     private fun searchAllMethods(table: MappingTable, methodName: String): String? {
-        return null
+        val fullKeys = table.lookupMethodByName(methodName)
+        if (fullKeys.isEmpty()) return null
+        val mojmapCounts = mutableMapOf<String, Int>()
+        for (fullKey in fullKeys) {
+            val slashIdx = fullKey.lastIndexOf('/')
+            val parenIdx = fullKey.indexOf('(', slashIdx + 1)
+            if (slashIdx < 0 || parenIdx < 0) continue
+            val owner = fullKey.substring(0, slashIdx)
+            val name = fullKey.substring(slashIdx + 1, parenIdx)
+            val desc = fullKey.substring(parenIdx)
+            val mojmap = table.mapMethod(owner, name, desc)
+            if (mojmap != name) {
+                mojmapCounts[mojmap] = (mojmapCounts[mojmap] ?: 0) + 1
+            }
+        }
+        return mojmapCounts.maxByOrNull { it.value }?.key
     }
 
     /**
-     * TODO Sub 2b: implementacja reverse index (analogicznie do searchAllMethods).
+     * Szuka pola w tabeli bez znajomosci owner klasy. Analogicznie do searchAllMethods.
      */
-    @Suppress("UNUSED_PARAMETER")
     private fun searchAllFields(table: MappingTable, fieldName: String): String? {
-        return null
+        val fullKeys = table.lookupFieldByName(fieldName)
+        if (fullKeys.isEmpty()) return null
+        val mojmapCounts = mutableMapOf<String, Int>()
+        for (fullKey in fullKeys) {
+            val slashIdx = fullKey.lastIndexOf('/')
+            if (slashIdx < 0) continue
+            val owner = fullKey.substring(0, slashIdx)
+            val name = fullKey.substring(slashIdx + 1)
+            val mojmap = table.mapField(owner, name)
+            if (mojmap != name) {
+                mojmapCounts[mojmap] = (mojmapCounts[mojmap] ?: 0) + 1
+            }
+        }
+        return mojmapCounts.maxByOrNull { it.value }?.key
     }
 }

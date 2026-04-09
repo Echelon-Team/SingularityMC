@@ -2,7 +2,6 @@ package com.singularity.agent.remapping
 
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
-import org.junit.jupiter.api.Disabled
 
 class ReflectionInterceptorTest {
 
@@ -19,22 +18,31 @@ class ReflectionInterceptorTest {
     )
 
     @Test
-    @Disabled("Reverse index lookup deferred to Sub 2b — searchAllMethods returns null (see ReflectionInterceptor.kt TODO)")
     fun `intercept SRG method name m_digits_`() {
-        // TODO Sub 2b: po dodaniu reverse index do MappingTable, ta asercja bedzie dzialala
+        // Sub 2b Task 0.2: reverse index wired — searchAllMethods uzywa lookupMethodByName
         assertEquals("tick", interceptor.interceptMethodName("m_5803_"))
     }
 
     @Test
-    @Disabled("Reverse index lookup deferred to Sub 2b — searchAllFields returns null (see ReflectionInterceptor.kt TODO)")
     fun `intercept SRG field name f_digits_`() {
-        // TODO Sub 2b: po dodaniu reverse index do MappingTable, ta asercja bedzie dzialala
+        // Sub 2b Task 0.2: reverse index wired — searchAllFields uzywa lookupFieldByName
         assertEquals("level", interceptor.interceptFieldName("f_19794_"))
     }
 
     @Test
     fun `non-SRG name passes through`() {
         assertEquals("myCustomMethod", interceptor.interceptMethodName("myCustomMethod"))
+    }
+
+    @Test
+    fun `intercept returns original when no mapping exists in empty tables`() {
+        // Sub 2b Task 0.2: edge case — SRG pattern match ale brak w reverse index.
+        // searchAllMethods zwraca null → interceptMethodName zwraca oryginal.
+        val emptyInterceptor = ReflectionInterceptor(
+            srgToMojmap = MappingTable("srg", emptyMap(), emptyMap(), emptyMap()),
+            intermediaryToMojmap = MappingTable("intermediary", emptyMap(), emptyMap(), emptyMap())
+        )
+        assertEquals("m_99999_", emptyInterceptor.interceptMethodName("m_99999_"))
     }
 
     @Test

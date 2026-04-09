@@ -90,6 +90,25 @@ class RemappingEngine(
         return fieldName
     }
 
+    /**
+     * Reverse lookup: mojmap internal name → original internal name.
+     * Szuka we WSZYSTKICH 3 tabelach (obf, srg, intermediary) w tej kolejnosci.
+     *
+     * Uzywane przez SingularityClassLoader: gdy JVM woła loadClass("net/minecraft/world/entity/Entity"),
+     * ale klasa jest w mod JAR pod SRG nazwa "net/minecraft/class_1297" — musimy reverse-resolve
+     * zeby znalezc plik w JAR.
+     *
+     * @param mojmapInternalName nazwa klasy po mojmap (np. "net/minecraft/world/entity/Entity")
+     * @return oryginalna nazwa (obf/SRG/Intermediary) lub null jesli nie zmapowana
+     */
+    fun reverseResolveClass(mojmapInternalName: String): String? {
+        for (table in allTables) {
+            val original = table.lookupOriginalClass(mojmapInternalName)
+            if (original != null) return original
+        }
+        return null
+    }
+
     override fun toString(): String =
         "RemappingEngine(obf=${obfToMojmap.size}, srg=${srgToMojmap.size}, intermediary=${intermediaryToMojmap.size}, tree=${inheritanceTree.size} classes)"
 }

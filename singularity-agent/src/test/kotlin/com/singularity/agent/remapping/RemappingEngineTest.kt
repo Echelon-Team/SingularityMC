@@ -106,4 +106,36 @@ class RemappingEngineTest {
             engine.resolveMethod("net/minecraft/world/entity/Entity", "method_5773", "()V")
         )
     }
+
+    // -------------------------------------------------------------------------
+    // Sub 2b Task 0.2: reverseResolveClass — dla SingularityClassLoader reverse lookup
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `reverseResolveClass finds original name in obf table`() {
+        // Engine setup() ma "abc" → "net/minecraft/world/entity/Entity" w obfTable
+        assertEquals("abc", engine.reverseResolveClass("net/minecraft/world/entity/Entity"))
+    }
+
+    @Test
+    fun `reverseResolveClass searches all tables`() {
+        // Specific test: klasa tylko w srgTable
+        val localTree = InheritanceTree()
+        val localEngine = RemappingEngine(
+            MappingTable("obf", emptyMap(), emptyMap(), emptyMap()),
+            MappingTable("srg",
+                classes = mapOf("net/minecraft/class_1297" to "net/minecraft/world/entity/Entity"),
+                methods = emptyMap(),
+                fields = emptyMap()
+            ),
+            MappingTable("intermediary", emptyMap(), emptyMap(), emptyMap()),
+            localTree
+        )
+        assertEquals("net/minecraft/class_1297", localEngine.reverseResolveClass("net/minecraft/world/entity/Entity"))
+    }
+
+    @Test
+    fun `reverseResolveClass returns null for unmapped mojmap name`() {
+        assertNull(engine.reverseResolveClass("com/unknown/Nothing"))
+    }
 }
