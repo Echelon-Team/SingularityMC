@@ -31,8 +31,9 @@ object WorldAccessProxyDispatcher {
     /** ThreadLocal: regionShift (log2 of region size in blocks). */
     private val currentRegionShift = ThreadLocal<Int>()
 
-    // Cached MethodHandles for BlockPos.getX()/getZ() — initialized lazily
+    // Cached MethodHandles for BlockPos.getX()/getY()/getZ() — initialized lazily
     @Volatile private var getXHandle: MethodHandle? = null
+    @Volatile private var getYHandle: MethodHandle? = null
     @Volatile private var getZHandle: MethodHandle? = null
     @Volatile private var handleInitAttempted = false
 
@@ -94,14 +95,18 @@ object WorldAccessProxyDispatcher {
         val neighborId = RegionId(regionGridX, regionGridZ)
         val snapshot = buffer.getNeighborSnapshot(neighborId) ?: return null
 
+        // Extract Y via cached MethodHandle (consistent with X/Z)
+        val y: Int = try {
+            getYHandle?.invoke(pos) as? Int ?: return null
+        } catch (e: Throwable) { return null }
+
         return when (methodName) {
             "getBlockState" -> {
-                val blockStateId = snapshot.getBlock(x, pos.javaClass.getMethod("getY").invoke(pos) as Int, z)
-                // Return blockStateId wrapped — actual BlockState resolution happens in compat module
-                blockStateId as Any // placeholder — real impl returns BlockState object
+                val blockStateId = snapshot.getBlock(x, y, z)
+                // blockStateId wrapped — actual BlockState resolution in compat module
+                blockStateId as Any
             }
             "getBlockEntity" -> {
-                val y = pos.javaClass.getMethod("getY").invoke(pos) as Int
                 snapshot.getBlockEntity(x, y, z) as Any?
             }
             "setBlockState" -> {
@@ -119,9 +124,12 @@ object WorldAccessProxyDispatcher {
             if (handleInitAttempted) return
             handleInitAttempted = true
             try {
-                val lookup = MethodHandles.publicLookup()
-                getXHandle = lookup.findVirtual(blockPosClass, "getX", MethodType.methodType(Int::class.java))
-                getZHandle = lookup.findVirtual(blockPosClass, "getZ", MethodType.methodType(Int::class.java))
+                // Use lookup() not publicLookup() — MC classes may be non-public after obfuscation
+                val lookup = MethodHandles.lookup()
+                val intType = MethodType.methodType(Int::class.java)
+                getXHandle = lookup.findVirtual(blockPosClass, "getX", intType)
+                getYHandle = lookup.findVirtual(blockPosClass, "getY", intType)
+                getZHandle = lookup.findVirtual(blockPosClass, "getZ", intType)
                 logger.info("WorldAccessProxyDispatcher MethodHandles initialized for {}", blockPosClass.name)
             } catch (e: Exception) {
                 logger.error("Failed to initialize MethodHandles for BlockPos: {}", e.message)

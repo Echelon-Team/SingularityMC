@@ -13,7 +13,7 @@ data class ThreadingConfig(
     /** Rozmiar regionu w chunkach (4, 6, 8, 12, 16). Default: 8 (128 bloków). */
     val regionSizeChunks: Int = 8,
 
-    /** Całkowita liczba wątków przypisanych do Minecraft. Min 4. */
+    /** Wątki do dimension pools (game tick). Chunk gen/IO adds ~2-3 more on top. Min 4. */
     val totalThreads: Int = 8,
 
     /** Timeout bariery synchronizacji w ms (design spec 4.5C — default 3000). */
