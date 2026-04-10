@@ -50,10 +50,18 @@ class ModVersionComparatorTest {
     }
 
     @Test
-    fun `pre-release comparison uses string order`() {
-        // Prosta implementacja: alpha < beta < rc (lexicographic)
+    fun `pre-release comparison uses tokenized order`() {
+        // Text tokens: alpha < beta < rc (lexicographic)
         assertTrue(ModVersionComparator.compare("1.0.0-beta", "1.0.0-alpha") > 0)
         assertTrue(ModVersionComparator.compare("1.0.0-rc1", "1.0.0-beta") > 0)
+    }
+
+    @Test
+    fun `pre-release rc10 newer than rc2 (same class as 0_5_10 bug)`() {
+        // Tokenized: "rc10" → ["rc","10"], "rc2" → ["rc","2"]. "rc"=="rc", 10>2.
+        assertTrue(ModVersionComparator.compare("1.0.0-rc10", "1.0.0-rc2") > 0)
+        assertTrue(ModVersionComparator.compare("1.0.0-beta10", "1.0.0-beta2") > 0)
+        assertTrue(ModVersionComparator.compare("1.0.0-alpha2", "1.0.0-alpha1") > 0)
     }
 
     @Test

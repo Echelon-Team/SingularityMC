@@ -121,11 +121,27 @@ object ModLoadingOrchestrator {
                 ForgeMetadataParser.parse(discovered.rawModsToml!!, discovered.jarPath)
                     .copy(loaderType = LoaderType.NEOFORGE)
 
-            LoaderType.MULTI ->
+            LoaderType.MULTI -> {
                 // Parsuj Fabric (bogatsze metadane — entrypoints, mixins), ale zachowaj MULTI
                 // tag żeby mod był widoczny dla Forge shims + dostawał Forge phases (1a/2/3).
-                FabricMetadataParser.parse(discovered.rawFabricJson!!, discovered.jarPath)
-                    .copy(loaderType = LoaderType.MULTI)
+                val fabricResult = FabricMetadataParser.parse(discovered.rawFabricJson!!, discovered.jarPath)
+
+                // Flag #21 MULTI modId mismatch validation: jeśli Fabric i Forge metadata
+                // w tym samym JAR mają RÓŻNE modId, loguj warning (half-broken multi-loader mod)
+                try {
+                    val forgeResult = ForgeMetadataParser.parse(discovered.rawModsToml!!, discovered.jarPath)
+                    if (fabricResult.modId != forgeResult.modId) {
+                        logger.warn(
+                            "MULTI-loader mod {} has mismatched modId: fabric='{}', forge='{}'. Using fabric modId.",
+                            discovered.jarPath.fileName, fabricResult.modId, forgeResult.modId
+                        )
+                    }
+                } catch (e: Exception) {
+                    logger.debug("Could not cross-validate MULTI mod Forge metadata: {}", e.message)
+                }
+
+                fabricResult.copy(loaderType = LoaderType.MULTI)
+            }
 
             LoaderType.LIBRARY, LoaderType.UNKNOWN -> null // nie parsujemy
         }

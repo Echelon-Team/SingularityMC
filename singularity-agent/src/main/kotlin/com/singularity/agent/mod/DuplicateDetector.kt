@@ -54,11 +54,14 @@ object DuplicateDetector {
                     modId, newest.version, sorted.size - 1
                 )
             } else {
-                // Różne mody z tym samym ID
-                for (i in 0 until group.size - 1) {
-                    actions.add(DuplicateAction.ConflictingIds(modA = group[i], modB = group[i + 1]))
+                // Różne mody z tym samym ID — emit all unique pairs (nie tylko adjacent).
+                // Dla 3 konfliktujących modów A, B, C: (A,B), (A,C), (B,C) — nie tylko (A,B),(B,C).
+                for (i in group.indices) {
+                    for (j in i + 1 until group.size) {
+                        actions.add(DuplicateAction.ConflictingIds(modA = group[i], modB = group[j]))
+                    }
                 }
-                logger.error("Conflicting mod IDs: {} — different mods use the same ID", modId)
+                logger.error("Conflicting mod IDs: {} — {} different mods use the same ID", modId, group.size)
             }
         }
 

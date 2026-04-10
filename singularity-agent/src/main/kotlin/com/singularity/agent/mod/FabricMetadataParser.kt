@@ -57,8 +57,12 @@ object FabricMetadataParser {
         val cleaned = rawJson.removePrefix("\uFEFF")
         val root = json.parseToJsonElement(cleaned).jsonObject
 
-        val modId = root["id"]?.jsonPrimitive?.contentOrNull
-            ?: throw IllegalArgumentException("fabric.mod.json missing required field 'id'")
+        // Normalize modId to lowercase — eliminuje false-positive "JEI" vs "jei" mismatch
+        // w DependencyResolver i DuplicateDetector. Fabric spec mówi modId powinien być lowercase
+        // ale real mods nie zawsze przestrzegają.
+        val modId = (root["id"]?.jsonPrimitive?.contentOrNull
+            ?: throw IllegalArgumentException("fabric.mod.json missing required field 'id'"))
+            .lowercase()
         val version = root["version"]?.jsonPrimitive?.contentOrNull
             ?: throw IllegalArgumentException("fabric.mod.json missing required field 'version'")
 
@@ -133,6 +137,11 @@ object FabricMetadataParser {
                 )
             )
         }
+
+        // NOTE: Fabric spec also defines `breaks` (hard-fail if mod present) and `conflicts`
+        // (soft-warn if present). We intentionally DO NOT parse/enforce these in the launcher —
+        // incompatibility enforcement is the LOADER's responsibility at runtime, not ours.
+        // Launcher discovers + presents; loader enforces. See design spec sekcja 5A.3.
 
         logger.debug(
             "Parsed Fabric mod: {} v{} ({} deps, {} mixins, {} entrypoints)",

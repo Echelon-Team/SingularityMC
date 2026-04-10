@@ -305,7 +305,7 @@ class ForgeMetadataParserTest {
     }
 
     @Test
-    fun `unclosed multi-line string does not crash`() {
+    fun `unclosed multi-line string does not crash and preserves partial content`() {
         // Broken TOML: opening `'''` ale brak zamykającego
         val toml = "[[mods]]\n" +
             "modId=\"broken\"\n" +
@@ -316,6 +316,21 @@ class ForgeMetadataParserTest {
         // Parser powinien gracefully log warn i emitować best-effort
         val result = ForgeMetadataParser.parse(toml, dummyPath)
         assertEquals("broken", result.modId)
-        // description może być partial ale parser nie crashuje
+        // description zawiera partial content (best-effort)
+        assertTrue(result.description.isNotBlank(), "Description should contain partial content")
+        assertTrue(result.description.contains("Never closed"), "Partial description should contain initial text")
+    }
+
+    @Test
+    fun `splitAuthors handles quoted commas correctly`() {
+        // "Dr. Evil, Jr." to JEDEN author, nie dwa
+        val result = ForgeMetadataParser.splitAuthors("\"Dr. Evil, Jr.\", Bob")
+        assertEquals(listOf("Dr. Evil, Jr.", "Bob"), result)
+    }
+
+    @Test
+    fun `splitAuthors handles mixed quotes and plain`() {
+        val result = ForgeMetadataParser.splitAuthors("Alice, \"Bob, the Great\", Carol")
+        assertEquals(listOf("Alice", "Bob, the Great", "Carol"), result)
     }
 }

@@ -134,7 +134,7 @@ object ForgeMetadataParser {
 
             when (currentSection) {
                 Section.MODS -> when (key) {
-                    "modId" -> modId = value
+                    "modId" -> modId = value.lowercase() // normalize modId case (flag #28)
                     "version" -> version = value
                     "displayName" -> displayName = value
                     "authors" -> authors = value
@@ -319,6 +319,9 @@ object ForgeMetadataParser {
      * - single author string: `"Alice"`
      * - comma-separated string: `"Alice, Bob, Carol"`
      * - TOML array syntax: `["Alice","Bob"]` (rzadko)
+     * - quoted names with commas: `"Dr. Evil, Jr."` (traktowane jako JEDEN author)
+     *
+     * Używa CSV-like split z respektowaniem cudzysłowów.
      */
     internal fun splitAuthors(authors: String): List<String> {
         if (authors.isBlank()) return emptyList()
@@ -328,8 +331,34 @@ object ForgeMetadataParser {
             if (it.startsWith("[") && it.endsWith("]")) it.substring(1, it.length - 1) else it
         }
 
-        return stripped.split(',')
-            .map { it.trim().removeSurrounding("\"").removeSurrounding("'").trim() }
-            .filter { it.isNotBlank() }
+        // CSV-like split respecting quoted strings
+        val result = mutableListOf<String>()
+        val current = StringBuilder()
+        var inQuotes = false
+        var quoteChar = ' '
+
+        for (ch in stripped) {
+            when {
+                !inQuotes && (ch == '"' || ch == '\'') -> {
+                    inQuotes = true
+                    quoteChar = ch
+                    // Nie dołączaj opening quote — zostawiamy czysty tekst
+                }
+                inQuotes && ch == quoteChar -> {
+                    inQuotes = false
+                    // Nie dołączaj closing quote
+                }
+                !inQuotes && ch == ',' -> {
+                    val value = current.toString().trim()
+                    if (value.isNotBlank()) result.add(value)
+                    current.clear()
+                }
+                else -> current.append(ch)
+            }
+        }
+        val last = current.toString().trim()
+        if (last.isNotBlank()) result.add(last)
+
+        return result
     }
 }

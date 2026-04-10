@@ -15,7 +15,8 @@ package com.singularity.agent.mod
  * 2. Main version (po kropkach) jest porównywana INTEGER-by-INTEGER (nie string).
  *    Brakujące komponenty traktowane jako 0.
  * 3. Stable > pre-release. `1.0.0` > `1.0.0-rc1`.
- * 4. Pre-release identifier porównywany string-compare (prostsze niż pełne SemVer rules).
+ * 4. Pre-release identifier: tokenizowany na sekwencje [text, num, text, num...] i porównywany
+ *    token-by-token (numeric tokens jako int, text jako string). `rc10 > rc2` poprawnie.
  *
  * Wzorzec adresuje real-world bug: string sort uważa `"0.5.10" < "0.5.9"` bo `'1' < '9'`.
  * Ten comparator: `0.5.10 > 0.5.9` poprawnie.
@@ -26,8 +27,7 @@ package com.singularity.agent.mod
  * - `compare("0.5.8+mc1.20.1", "0.5.7+mc1.20.1")` → `+1`
  * - `compare("0.5.1", "0.5.1")` → `0`
  *
- * NIE obsługiwane (fallback na string):
- * - Pełne SemVer pre-release ordering (`alpha` < `beta` < `rc` < `final`)
+ * NIE obsługiwane:
  * - Non-ASCII znaki w wersjach
  */
 object ModVersionComparator : Comparator<String> {
@@ -47,8 +47,57 @@ object ModVersionComparator : Comparator<String> {
             aPre == null && bPre == null -> 0
             aPre == null -> 1 // a stable, b pre-release → a > b
             bPre == null -> -1 // a pre-release, b stable → a < b
-            else -> aPre.compareTo(bPre) // oba pre-release → string compare (alpha < beta < rc)
+            else -> comparePreRelease(aPre, bPre)
         }
+    }
+
+    /**
+     * Porównuje pre-release identifiers token-by-token.
+     * Tokenizacja: rozdziela na sekwencje cyfr i nie-cyfr.
+     * `"rc10"` → `["rc", "10"]`, `"beta.2"` → `["beta", ".", "2"]`
+     *
+     * Numeric tokens porównywane jako int: `"10" > "2"`.
+     * Text tokens porównywane jako string: `"alpha" < "beta" < "rc"`.
+     */
+    private fun comparePreRelease(a: String, b: String): Int {
+        val aTokens = tokenize(a)
+        val bTokens = tokenize(b)
+        val maxLen = maxOf(aTokens.size, bTokens.size)
+        for (i in 0 until maxLen) {
+            val aTok = aTokens.getOrElse(i) { "" }
+            val bTok = bTokens.getOrElse(i) { "" }
+            val aInt = aTok.toIntOrNull()
+            val bInt = bTok.toIntOrNull()
+            val cmp = when {
+                aInt != null && bInt != null -> aInt.compareTo(bInt)
+                else -> aTok.compareTo(bTok)
+            }
+            if (cmp != 0) return cmp
+        }
+        return 0
+    }
+
+    /**
+     * Tokenizuje string na sekwencje cyfr i nie-cyfr.
+     * `"rc10"` → `["rc", "10"]`
+     * `"beta.2"` → `["beta", ".", "2"]`
+     */
+    private fun tokenize(s: String): List<String> {
+        if (s.isEmpty()) return emptyList()
+        val tokens = mutableListOf<String>()
+        val current = StringBuilder()
+        var lastWasDigit = s[0].isDigit()
+        for (ch in s) {
+            val isDigit = ch.isDigit()
+            if (current.isNotEmpty() && isDigit != lastWasDigit) {
+                tokens.add(current.toString())
+                current.clear()
+            }
+            current.append(ch)
+            lastWasDigit = isDigit
+        }
+        if (current.isNotEmpty()) tokens.add(current.toString())
+        return tokens
     }
 
     /**

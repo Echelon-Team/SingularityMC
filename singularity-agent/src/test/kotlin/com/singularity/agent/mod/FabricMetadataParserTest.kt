@@ -247,4 +247,13 @@ class FabricMetadataParserTest {
         val result = FabricMetadataParser.parse(json, dummyPath)
         assertTrue(result.mixinConfigs.isEmpty())
     }
+
+    @Test
+    fun `modId is normalized to lowercase`() {
+        // Flag #28: Fabric spec says modId should be lowercase but real mods don't always comply.
+        // Parser normalizes to prevent "JEI" vs "jei" false-positive missing deps.
+        val json = """{"id":"MyMod","version":"1.0"}"""
+        val result = FabricMetadataParser.parse(json, dummyPath)
+        assertEquals("mymod", result.modId)
+    }
 }

@@ -138,4 +138,61 @@ class RemappingEngineTest {
     fun `reverseResolveClass returns null for unmapped mojmap name`() {
         assertNull(engine.reverseResolveClass("com/unknown/Nothing"))
     }
+
+    // -------------------------------------------------------------------------
+    // Flag #8 from Sub 2a review: per-table isolation tests
+    // Original test "resolveMethod tries all mapping tables" used m_5803_ which
+    // exists in BOTH obf AND srg tables — didn't isolate which table works.
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `resolveMethod from obf table only`() {
+        val localTree = InheritanceTree()
+        localTree.register("com/example/Foo", "java/lang/Object", emptyList())
+        val localEngine = RemappingEngine(
+            obfToMojmap = MappingTable("obf",
+                classes = emptyMap(),
+                methods = mapOf("com/example/Foo/obfOnly()V" to "realMethod"),
+                fields = emptyMap()
+            ),
+            srgToMojmap = MappingTable("srg", emptyMap(), emptyMap(), emptyMap()),
+            intermediaryToMojmap = MappingTable("int", emptyMap(), emptyMap(), emptyMap()),
+            inheritanceTree = localTree
+        )
+        assertEquals("realMethod", localEngine.resolveMethod("com/example/Foo", "obfOnly", "()V"))
+    }
+
+    @Test
+    fun `resolveMethod from srg table only`() {
+        val localTree = InheritanceTree()
+        localTree.register("com/example/Foo", "java/lang/Object", emptyList())
+        val localEngine = RemappingEngine(
+            obfToMojmap = MappingTable("obf", emptyMap(), emptyMap(), emptyMap()),
+            srgToMojmap = MappingTable("srg",
+                classes = emptyMap(),
+                methods = mapOf("com/example/Foo/m_12345_()V" to "srgMethod"),
+                fields = emptyMap()
+            ),
+            intermediaryToMojmap = MappingTable("int", emptyMap(), emptyMap(), emptyMap()),
+            inheritanceTree = localTree
+        )
+        assertEquals("srgMethod", localEngine.resolveMethod("com/example/Foo", "m_12345_", "()V"))
+    }
+
+    @Test
+    fun `resolveMethod from intermediary table only`() {
+        val localTree = InheritanceTree()
+        localTree.register("com/example/Foo", "java/lang/Object", emptyList())
+        val localEngine = RemappingEngine(
+            obfToMojmap = MappingTable("obf", emptyMap(), emptyMap(), emptyMap()),
+            srgToMojmap = MappingTable("srg", emptyMap(), emptyMap(), emptyMap()),
+            intermediaryToMojmap = MappingTable("int",
+                classes = emptyMap(),
+                methods = mapOf("com/example/Foo/method_999()V" to "intMethod"),
+                fields = emptyMap()
+            ),
+            inheritanceTree = localTree
+        )
+        assertEquals("intMethod", localEngine.resolveMethod("com/example/Foo", "method_999", "()V"))
+    }
 }

@@ -82,9 +82,26 @@ object AgentMain {
      * Dostępny dla shimów w module compat (Sub 2d) przez bridge contracts.
      *
      * Nullable bo bootstrap może nie wystartować w standalone mode (brak instance args).
+     *
+     * **Thread-safety contract:**
+     * - Written ONCE w bootstrap() step 15 (premain thread, before MC main starts).
+     * - Post-bootstrap reads from MC threads are safe (@Volatile + ConcurrentHashMap wewnętrzny).
+     * - [bootstrapComplete] musi być `true` zanim shimy zaczynają odpytywać registry.
+     *   Przed bootstrap complete registry może zawierać partial state (mody registered
+     *   w kolejności topologicznej, nie wszystkie naraz).
      */
     @Volatile
     var modRegistry: SingularityModRegistry? = null
+        private set
+
+    /**
+     * Flag: bootstrap zakończony pomyślnie. Shimym (Sub 2d) powinny sprawdzić tę flagę
+     * zanim odpytują [modRegistry] — jeśli `false`, registry może mieć partial state.
+     *
+     * Ustawiana na `true` PO `ModBootstrap.loadMods()` complete + log summary.
+     */
+    @Volatile
+    var bootstrapComplete: Boolean = false
         private set
 
     @JvmStatic
@@ -277,6 +294,8 @@ object AgentMain {
                 "Sub 2c mod loading complete: {} mods registered, {} mixin configs loaded",
                 modLoadResult.registeredCount, modLoadResult.loadedMixinConfigs.size
             )
+            bootstrapComplete = true
+            logger.info("Agent bootstrap COMPLETE — bootstrapComplete=true, shimy safe to query modRegistry")
         } finally {
             // BLOCKER fix (edge-case-hunter): cleanup temp mapping dir gwarantowany
             // nawet przy throw w srodku bootstrap(). deleteRecursively() na Windows

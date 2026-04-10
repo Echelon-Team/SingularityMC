@@ -140,14 +140,17 @@ object ModDiscovery {
             if (group != null) return group
         }
 
-        // Sprawdź pom.properties
-        val pomEntry = jar.entries().toList().firstOrNull {
-            it.name.matches(Regex("META-INF/maven/.+/.+/pom\\.properties"))
-        }
-        if (pomEntry != null) {
-            val props = java.util.Properties()
-            jar.getInputStream(pomEntry).use { props.load(it) }
-            return props.getProperty("groupId")
+        // Sprawdź pom.properties — iterate Enumeration directly zamiast
+        // jar.entries().toList() (flag #29: lista 5000+ entries dla fat modów = 1M alloc)
+        val pomRegex = Regex("META-INF/maven/.+/.+/pom\\.properties")
+        val entries = jar.entries()
+        while (entries.hasMoreElements()) {
+            val entry = entries.nextElement()
+            if (entry.name.matches(pomRegex)) {
+                val props = java.util.Properties()
+                jar.getInputStream(entry).use { props.load(it) }
+                return props.getProperty("groupId")
+            }
         }
 
         return null
