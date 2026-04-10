@@ -1,5 +1,6 @@
 package com.singularity.agent.registry
 
+import com.singularity.common.contracts.ModRegistryContract
 import com.singularity.common.model.LoaderType
 import com.singularity.common.model.ModSide
 import org.slf4j.LoggerFactory
@@ -14,34 +15,37 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Thread-safe: ConcurrentHashMap, bezpieczny dla concurrent reads z wielu wątków.
  *
+ * Implementuje ModRegistryContract — moduły compat używają kontraktu,
+ * nie tej klasy bezpośrednio.
+ *
  * Referencja: design spec sekcja 5A.7 (cross-loader visibility rules).
  */
-class SingularityModRegistry {
+class SingularityModRegistry : ModRegistryContract {
 
     private val logger = LoggerFactory.getLogger(SingularityModRegistry::class.java)
     private val mods = ConcurrentHashMap<String, RegisteredMod>()
 
     data class RegisteredMod(
-        val modId: String,
-        val version: String,
-        val name: String,
-        val loaderType: LoaderType,
-        val side: ModSide
-    )
+        override val modId: String,
+        override val version: String,
+        override val name: String,
+        override val loaderType: LoaderType,
+        override val side: ModSide
+    ) : ModRegistryContract.ModEntry
 
-    val size: Int get() = mods.size
+    override val size: Int get() = mods.size
 
     fun register(mod: RegisteredMod) {
         mods[mod.modId] = mod
         logger.debug("Registered mod: {} v{} ({})", mod.modId, mod.version, mod.loaderType)
     }
 
-    fun getById(modId: String): RegisteredMod? = mods[modId]
+    override fun getById(modId: String): RegisteredMod? = mods[modId]
 
-    fun isLoaded(modId: String): Boolean = mods.containsKey(modId)
+    override fun isLoaded(modId: String): Boolean = mods.containsKey(modId)
 
-    fun getAll(): List<RegisteredMod> = mods.values.toList()
+    override fun getAll(): List<RegisteredMod> = mods.values.toList()
 
-    fun getByLoader(loaderType: LoaderType): List<RegisteredMod> =
+    override fun getByLoader(loaderType: LoaderType): List<RegisteredMod> =
         mods.values.filter { it.loaderType == loaderType }
 }

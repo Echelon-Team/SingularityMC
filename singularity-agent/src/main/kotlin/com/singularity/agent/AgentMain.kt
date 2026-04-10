@@ -17,7 +17,9 @@ import com.singularity.agent.module.LoadedModule
 import com.singularity.agent.module.ModuleLoader
 import com.singularity.agent.pipeline.SingularityTransformer
 import com.singularity.agent.registry.SingularityModRegistry
+import com.singularity.agent.registry.VisibilityRules
 import com.singularity.agent.remapping.InheritanceTree
+import com.singularity.common.contracts.CompatModule
 import com.singularity.agent.remapping.RemappingEngine
 import org.slf4j.LoggerFactory
 import org.spongepowered.asm.service.IMixinService
@@ -84,11 +86,11 @@ object AgentMain {
      * Nullable bo bootstrap może nie wystartować w standalone mode (brak instance args).
      *
      * **Thread-safety contract:**
-     * - Written ONCE w bootstrap() step 15 (premain thread, before MC main starts).
-     * - Post-bootstrap reads from MC threads are safe (@Volatile + ConcurrentHashMap wewnętrzny).
-     * - [bootstrapComplete] musi być `true` zanim shimy zaczynają odpytywać registry.
-     *   Przed bootstrap complete registry może zawierać partial state (mody registered
-     *   w kolejności topologicznej, nie wszystkie naraz).
+     * - Written ONCE w bootstrap() AFTER ModBootstrap.loadMods() completes (premain thread).
+     * - Assignment delayed: `modRegistry != null` implies bootstrap complete + all mods registered.
+     *   Shimy mogą bezpiecznie sprawdzić `modRegistry != null` zamiast osobnej flagi.
+     * - Post-bootstrap reads from MC threads are safe (@Volatile publish + ConcurrentHashMap wewnętrzny).
+     * - [bootstrapComplete] jest redundantnym guardem dla czytelności — ustawiany razem z modRegistry.
      */
     @Volatile
     var modRegistry: SingularityModRegistry? = null
@@ -98,7 +100,9 @@ object AgentMain {
      * Flag: bootstrap zakończony pomyślnie. Shimym (Sub 2d) powinny sprawdzić tę flagę
      * zanim odpytują [modRegistry] — jeśli `false`, registry może mieć partial state.
      *
-     * Ustawiana na `true` PO `ModBootstrap.loadMods()` complete + log summary.
+     * Ustawiana na `true` RAZEM z [modRegistry] assignment PO `ModBootstrap.loadMods()` complete.
+     * `modRegistry != null` jest równoważne z `bootstrapComplete == true` — oba ustawiane atomicznie
+     * (sequential writes na jednym wątku, @Volatile publish).
      */
     @Volatile
     var bootstrapComplete: Boolean = false
@@ -262,8 +266,9 @@ object AgentMain {
 
             // Sub 2c: Mod loading pipeline
             // Step 15: SingularityModRegistry + stub ModInitializer (real wire w Sub 2d/2e)
+            // NOTE: modRegistry assignment DELAYED until after loadMods() — see below.
+            // This ensures modRegistry != null only when all mods are fully registered.
             val registry = SingularityModRegistry()
-            modRegistry = registry
             val initializer = ModInitializer(
                 onPhase1a = { mod ->
                     logger.debug("Phase 1a (stub): Forge registry events for '{}' — real wire Sub 2d", mod.modId)
@@ -294,8 +299,28 @@ object AgentMain {
                 "Sub 2c mod loading complete: {} mods registered, {} mixin configs loaded",
                 modLoadResult.registeredCount, modLoadResult.loadedMixinConfigs.size
             )
+
+            // Publish registry AFTER loadMods() — all mods fully registered, no partial state.
+            // Order matters: modRegistry write BEFORE bootstrapComplete write (both @Volatile).
+            // Reader seeing bootstrapComplete=true is guaranteed to see modRegistry != null.
+            // Reader seeing modRegistry != null also knows bootstrap is complete.
+            modRegistry = registry
             bootstrapComplete = true
-            logger.info("Agent bootstrap COMPLETE — bootstrapComplete=true, shimy safe to query modRegistry")
+            logger.info("Agent bootstrap COMPLETE — bootstrapComplete=true, modRegistry published")
+
+            // Sub 2d Step 21: Load compat module entrypoint + wire shims
+            val entrypoint = descriptor.entrypoint
+            logger.info("Loading compat module entrypoint: {}", entrypoint)
+            try {
+                val moduleClass = Class.forName(entrypoint, true, singularityClassLoader)
+                val compatModule = moduleClass.getDeclaredConstructor().newInstance() as CompatModule
+                compatModule.configure(registry, VisibilityRules, instanceDir)
+                compatModule.initialize()
+                logger.info("Compat module initialized: {} v{}", compatModule.moduleId, compatModule.moduleVersion)
+            } catch (e: Exception) {
+                logger.error("Failed to load compat module entrypoint '{}': {}", entrypoint, e.message, e)
+                // Non-fatal: agent works without compat module, mods just won't see loader shims
+            }
         } finally {
             // BLOCKER fix (edge-case-hunter): cleanup temp mapping dir gwarantowany
             // nawet przy throw w srodku bootstrap(). deleteRecursively() na Windows

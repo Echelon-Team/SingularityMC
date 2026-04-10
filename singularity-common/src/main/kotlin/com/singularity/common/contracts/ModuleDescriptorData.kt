@@ -33,6 +33,18 @@ data class ModuleDescriptorData(
      */
     val requiredContracts: Set<String>,
 
+    /**
+     * Minimalna wersja core API wymagana przez moduł.
+     * Agent sprawdza: swojaWersja >= coreApiVersion.
+     */
+    val coreApiVersion: String = "1.0.0",
+
+    /**
+     * Pełna nazwa klasy entrypoint modułu (implementuje CompatModule).
+     * Agent ładuje tę klasę przez SingularityClassLoader i wywołuje initialize().
+     */
+    val entrypoint: String,
+
     /** Ścieżki do mapping tables wewnątrz JAR (relative) */
     val mappingFiles: MappingFiles = MappingFiles()
 )

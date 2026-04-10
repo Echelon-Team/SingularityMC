@@ -121,4 +121,102 @@ class DuplicateDetectorTest {
         assertEquals(1, actions.size)
         assertTrue(actions[0] is DuplicateDetector.DuplicateAction.ConflictingIds)
     }
+
+    // --- CrossLoaderSameId (#26 opcja C, Task 15) ---
+
+    private fun modWithLoader(id: String, version: String, name: String, author: String, loader: LoaderType) = ModInfo(
+        modId = id, version = version, name = name, loaderType = loader,
+        dependencies = emptyList(), entryPoints = emptyList(), mixinConfigs = emptyList(),
+        authors = listOf(author), description = "", side = ModSide.BOTH,
+        jarPath = Paths.get("/mods/$id-$loader-$version.jar")
+    )
+
+    @Test
+    fun `Fabric core + Forge core = CrossLoaderSameId (not ConflictingIds)`() {
+        val mods = listOf(
+            modWithLoader("core", "1.0", "Core Fabric", "Alice", LoaderType.FABRIC),
+            modWithLoader("core", "1.0", "Core Forge", "Bob", LoaderType.FORGE)
+        )
+
+        val actions = DuplicateDetector.detect(mods)
+        assertEquals(1, actions.size)
+        assertTrue(actions[0] is DuplicateDetector.DuplicateAction.CrossLoaderSameId)
+        val crossLoader = actions[0] as DuplicateDetector.DuplicateAction.CrossLoaderSameId
+        assertEquals(2, crossLoader.mods.size)
+    }
+
+    @Test
+    fun `Forge core + Forge core = ConflictingIds (same ecosystem)`() {
+        val mods = listOf(
+            modWithLoader("core", "1.0", "Core A", "Alice", LoaderType.FORGE),
+            modWithLoader("core", "1.0", "Core B", "Bob", LoaderType.FORGE)
+        )
+
+        val actions = DuplicateDetector.detect(mods)
+        assertEquals(1, actions.size)
+        assertTrue(actions[0] is DuplicateDetector.DuplicateAction.ConflictingIds)
+    }
+
+    @Test
+    fun `MULTI core + Fabric core = ConflictingIds (MULTI visible in both)`() {
+        val mods = listOf(
+            modWithLoader("core", "1.0", "Core Multi", "Alice", LoaderType.MULTI),
+            modWithLoader("core", "1.0", "Core Fabric", "Bob", LoaderType.FABRIC)
+        )
+
+        val actions = DuplicateDetector.detect(mods)
+        assertEquals(1, actions.size)
+        assertTrue(actions[0] is DuplicateDetector.DuplicateAction.ConflictingIds)
+    }
+
+    @Test
+    fun `Fabric core + NeoForge core = CrossLoaderSameId`() {
+        val mods = listOf(
+            modWithLoader("core", "1.0", "Core Fabric", "Alice", LoaderType.FABRIC),
+            modWithLoader("core", "1.0", "Core NeoForge", "Charlie", LoaderType.NEOFORGE)
+        )
+
+        val actions = DuplicateDetector.detect(mods)
+        assertEquals(1, actions.size)
+        assertTrue(actions[0] is DuplicateDetector.DuplicateAction.CrossLoaderSameId)
+    }
+
+    @Test
+    fun `Forge + NeoForge same modId = ConflictingIds (same ecosystem)`() {
+        val mods = listOf(
+            modWithLoader("mylib", "1.0", "MyLib Forge", "Dev", LoaderType.FORGE),
+            modWithLoader("mylib", "1.0", "MyLib NeoForge", "Dev2", LoaderType.NEOFORGE)
+        )
+
+        val actions = DuplicateDetector.detect(mods)
+        assertEquals(1, actions.size)
+        assertTrue(actions[0] is DuplicateDetector.DuplicateAction.ConflictingIds)
+    }
+
+    @Test
+    fun `NeoForge + NeoForge same modId = ConflictingIds (same ecosystem)`() {
+        val mods = listOf(
+            modWithLoader("mylib", "1.0", "MyLib A", "Dev", LoaderType.NEOFORGE),
+            modWithLoader("mylib", "1.0", "MyLib B", "Dev2", LoaderType.NEOFORGE)
+        )
+
+        val actions = DuplicateDetector.detect(mods)
+        assertEquals(1, actions.size)
+        assertTrue(actions[0] is DuplicateDetector.DuplicateAction.ConflictingIds)
+    }
+
+    @Test
+    fun `Fabric + Forge + NeoForge same modId = CrossLoaderSameId (3-loader group)`() {
+        val mods = listOf(
+            modWithLoader("jei", "1.0", "JEI Fabric", "mezz-fabric", LoaderType.FABRIC),
+            modWithLoader("jei", "1.0", "JEI Forge", "mezz-forge", LoaderType.FORGE),
+            modWithLoader("jei", "1.0", "JEI NeoForge", "mezz-neo", LoaderType.NEOFORGE)
+        )
+
+        val actions = DuplicateDetector.detect(mods)
+        assertEquals(1, actions.size)
+        assertTrue(actions[0] is DuplicateDetector.DuplicateAction.CrossLoaderSameId)
+        val crossLoader = actions[0] as DuplicateDetector.DuplicateAction.CrossLoaderSameId
+        assertEquals(3, crossLoader.mods.size)
+    }
 }

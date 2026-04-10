@@ -44,7 +44,16 @@ interface CompatModule {
     val requiredContracts: Set<String>
 
     /**
-     * Inicjalizacja modułu. Wywoływane przez agenta po weryfikacji kontraktów.
+     * Konfiguruje moduł z kontraktami z agenta. Wywoływane PRZED initialize().
+     *
+     * @param registry kontrakt dostępu do rejestru modów
+     * @param visibility kontrakt filtrowania widoczności per loader
+     * @param gameDir ścieżka do katalogu gry (instancji MC)
+     */
+    fun configure(registry: ModRegistryContract, visibility: VisibilityContract, gameDir: java.nio.file.Path) {}
+
+    /**
+     * Inicjalizacja modułu. Wywoływane przez agenta po configure() i po weryfikacji kontraktów.
      * Moduł ładuje mapping tables do pamięci, rejestruje shimy, inicjalizuje bridges.
      */
     fun initialize()

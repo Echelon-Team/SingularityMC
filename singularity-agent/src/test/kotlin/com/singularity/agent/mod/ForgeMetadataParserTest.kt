@@ -333,4 +333,93 @@ class ForgeMetadataParserTest {
         val result = ForgeMetadataParser.splitAuthors("Alice, \"Bob, the Great\", Carol")
         assertEquals(listOf("Alice", "Bob, the Great", "Carol"), result)
     }
+
+    // --- NeoForge detection heurystyka (Task 14) ---
+
+    @Test
+    fun `dependency on neoforge detects NEOFORGE loader type`() {
+        val toml = """
+            [[mods]]
+            modId="mymod"
+            version="1.0.0"
+            displayName="My Mod"
+            authors="Dev"
+
+            [[dependencies.mymod]]
+            modId="neoforge"
+            mandatory=true
+            versionRange="[20.1,)"
+
+            [[dependencies.mymod]]
+            modId="minecraft"
+            mandatory=true
+            versionRange="[1.20.1,)"
+        """.trimIndent()
+
+        val info = ForgeMetadataParser.parse(toml, dummyPath)
+        assertEquals(LoaderType.NEOFORGE, info.loaderType)
+    }
+
+    @Test
+    fun `dependency on forge detects FORGE loader type`() {
+        val toml = """
+            [[mods]]
+            modId="create"
+            version="0.5.1"
+            displayName="Create"
+            authors="simibubi"
+
+            [[dependencies.create]]
+            modId="forge"
+            mandatory=true
+            versionRange="[47.1.0,)"
+        """.trimIndent()
+
+        val info = ForgeMetadataParser.parse(toml, dummyPath)
+        assertEquals(LoaderType.FORGE, info.loaderType)
+    }
+
+    @Test
+    fun `no loader dependency defaults to FORGE`() {
+        val toml = """
+            [[mods]]
+            modId="oldmod"
+            version="1.0.0"
+            displayName="Old Mod"
+            authors="Dev"
+
+            [[dependencies.oldmod]]
+            modId="minecraft"
+            mandatory=true
+            versionRange="[1.20.1,)"
+        """.trimIndent()
+
+        val info = ForgeMetadataParser.parse(toml, dummyPath)
+        assertEquals(LoaderType.FORGE, info.loaderType)
+    }
+
+    @Test
+    fun `neoforge dependency takes precedence when both neoforge and forge present`() {
+        // Edge case: mod deklaruje dependency na OBA (nie powinno się zdarzać, ale defensive)
+        val toml = """
+            [[mods]]
+            modId="weirdmod"
+            version="1.0.0"
+            displayName="Weird"
+            authors="Dev"
+
+            [[dependencies.weirdmod]]
+            modId="forge"
+            mandatory=false
+            versionRange="[47,)"
+
+            [[dependencies.weirdmod]]
+            modId="neoforge"
+            mandatory=true
+            versionRange="[20.1,)"
+        """.trimIndent()
+
+        val info = ForgeMetadataParser.parse(toml, dummyPath)
+        assertEquals(LoaderType.NEOFORGE, info.loaderType)
+    }
 }

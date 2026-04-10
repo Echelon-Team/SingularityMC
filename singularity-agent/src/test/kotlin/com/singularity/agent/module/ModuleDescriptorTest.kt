@@ -20,6 +20,7 @@ class ModuleDescriptorTest {
         "minecraftVersion": "1.20.1",
         "supportedLoaders": ["fabric", "forge", "neoforge"],
         "requiredContracts": ["metadata", "remapping", "loader_emulation", "bridges", "hooks"],
+        "entrypoint": "com.singularity.compat.v1_20_1.CompatModule1201",
         "mappingFiles": {
             "obfToMojmap": "mappings/obf-to-mojmap.tiny",
             "srgToMojmap": "mappings/srg-to-mojmap.tiny",
@@ -48,7 +49,8 @@ class ModuleDescriptorTest {
             "moduleVersion": "0.1.0",
             "minecraftVersion": "1.20.1",
             "supportedLoaders": ["fabric"],
-            "requiredContracts": ["metadata"]
+            "requiredContracts": ["metadata"],
+            "entrypoint": "com.singularity.compat.v1_20_1.CompatModule1201"
         }
         """.trimIndent()
         val descriptor = json.decodeFromString<ModuleDescriptorData>(minimalJson)
@@ -65,6 +67,7 @@ class ModuleDescriptorTest {
             minecraftVersion = "1.20.1",
             supportedLoaders = setOf("fabric", "forge"),
             requiredContracts = setOf("metadata", "remapping"),
+            entrypoint = "com.singularity.compat.v1_20_1.CompatModule1201",
             mappingFiles = MappingFiles(
                 obfToMojmap = "custom/obf.tiny",
                 srgToMojmap = "custom/srg.tiny",
@@ -85,6 +88,7 @@ class ModuleDescriptorTest {
             "minecraftVersion": "1.20.1",
             "supportedLoaders": ["fabric"],
             "requiredContracts": ["metadata"],
+            "entrypoint": "com.singularity.compat.v1_20_1.CompatModule1201",
             "futureField": "some value",
             "anotherFuture": 42
         }

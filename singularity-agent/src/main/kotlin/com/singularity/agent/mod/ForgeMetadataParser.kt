@@ -143,7 +143,7 @@ object ForgeMetadataParser {
                 Section.DEPENDENCIES -> when (key) {
                     "modId" -> {
                         flushDependency()
-                        depModId = value
+                        depModId = value.lowercase()
                     }
                     "mandatory" -> depMandatory = value.lowercase() == "true"
                     "versionRange" -> depVersionRange = value
@@ -172,16 +172,26 @@ object ForgeMetadataParser {
             logger.warn("Forge JAR {} has multiple [[mods]] — using last only (modId={})", jarPath.fileName, modId)
         }
 
+        // NeoForge detection heurystyka (1.20.1):
+        // Na 1.20.1 NeoForge i Forge mają identyczny format mods.toml.
+        // Jedyna różnica: dependency modId="neoforge" vs modId="forge".
+        // Źródło: neoforged/NeoForge Discussion #58.
+        val detectedLoaderType = when {
+            dependencies.any { it.modId == "neoforge" } -> LoaderType.NEOFORGE
+            dependencies.any { it.modId == "forge" } -> LoaderType.FORGE
+            else -> LoaderType.FORGE // safe default — brak dependency na loader = stary Forge mod
+        }
+
         logger.debug(
-            "Parsed Forge mod: {} v{} ({} deps, {} mixins)",
-            modId, version, dependencies.size, mixinConfigs.size
+            "Parsed {} mod: {} v{} ({} deps, {} mixins)",
+            detectedLoaderType, modId, version, dependencies.size, mixinConfigs.size
         )
 
         return ModInfo(
             modId = modId,
             version = version,
             name = displayName ?: modId,
-            loaderType = LoaderType.FORGE,
+            loaderType = detectedLoaderType,
             dependencies = dependencies,
             entryPoints = emptyList(), // Forge nie ma entrypointów jak Fabric
             mixinConfigs = mixinConfigs,

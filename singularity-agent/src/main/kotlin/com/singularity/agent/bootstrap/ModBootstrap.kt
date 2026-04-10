@@ -94,6 +94,11 @@ object ModBootstrap {
                         dup.modA.name, dup.modA.jarPath.fileName,
                         dup.modB.name, dup.modB.jarPath.fileName
                     )
+                is com.singularity.agent.mod.DuplicateDetector.DuplicateAction.CrossLoaderSameId ->
+                    logger.info(
+                        "Cross-loader same modId '{}': {} mods from different ecosystems — both remain",
+                        dup.mods.first().modId, dup.mods.map { it.loaderType }.distinct()
+                    )
             }
         }
         for (err in discoveryResult.resolutionErrors) {

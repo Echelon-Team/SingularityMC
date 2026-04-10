@@ -11,7 +11,8 @@ class ContractValidatorTest {
         moduleVersion = "1.0.0",
         minecraftVersion = "1.20.1",
         supportedLoaders = setOf("fabric"),
-        requiredContracts = requiredContracts
+        requiredContracts = requiredContracts,
+        entrypoint = "com.singularity.compat.v1_20_1.CompatModule1201"
     )
 
     @Test

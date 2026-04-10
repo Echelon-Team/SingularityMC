@@ -40,7 +40,8 @@ class ModuleLoaderTest {
         moduleVersion = "1.0.0",
         minecraftVersion = "1.20.1",
         supportedLoaders = setOf("fabric", "forge", "neoforge"),
-        requiredContracts = setOf("metadata", "remapping")
+        requiredContracts = setOf("metadata", "remapping"),
+        entrypoint = "com.singularity.compat.v1_20_1.CompatModule1201"
     )
 
     @Test
