@@ -345,6 +345,19 @@ object AgentMain {
 
             // Publish registry AFTER loadMods() — all mods fully registered, no partial state.
             modRegistry = registry
+
+            // Sub 3: Initialize threading engine AFTER mod loading (OptimizationModDetector needs registry)
+            try {
+                val threadingConfig = com.singularity.agent.threading.config.ThreadingConfig()
+                val threadingEngine = com.singularity.agent.threading.ThreadingEngine(
+                    threadingConfig, registry, com.singularity.agent.threading.region.RegionGroupingHint.NONE
+                )
+                threadingEngine.initialize(listOf("overworld", "the_nether", "the_end"))
+                logger.info("Threading engine initialized")
+            } catch (e: Exception) {
+                logger.error("Threading engine init failed (non-fatal): {}", e.message, e)
+            }
+
             bootstrapComplete = true
             logger.info("Agent bootstrap COMPLETE — bootstrapComplete=true, modRegistry published")
         } finally {
