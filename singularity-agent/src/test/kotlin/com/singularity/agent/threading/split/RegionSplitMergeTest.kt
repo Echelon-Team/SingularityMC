@@ -71,4 +71,25 @@ class RegionSplitMergeTest {
         splitMerge.recordSplit(RegionId(0, 0), listOf(RegionId(0, 0), RegionId(0, 1)))
         assertEquals(setOf(RegionId(0, 1)), splitMerge.getSiblings(RegionId(0, 0)))
     }
+
+    @Test
+    fun `shouldMerge requires full merge hysteresis period`() {
+        val r = region(RegionId(0, 0), 50) // below mergeLoadThreshold=100
+        repeat(100) { splitMerge.observeTick(r) }
+        assertFalse(splitMerge.shouldMerge(r)) // 100 < 200 hysteresis
+
+        repeat(105) { splitMerge.observeTick(r) }
+        assertTrue(splitMerge.shouldMerge(r)) // 205 >= 200 hysteresis
+    }
+
+    @Test
+    fun `shouldMerge resets when load rises above merge threshold`() {
+        val r = region(RegionId(0, 0), 50)
+        repeat(150) { splitMerge.observeTick(r) }
+        r.setEntityCount(300) // above mergeLoadThreshold, in dead zone
+        splitMerge.observeTick(r)
+        r.setEntityCount(50) // back below
+        repeat(50) { splitMerge.observeTick(r) }
+        assertFalse(splitMerge.shouldMerge(r)) // counter reset, only 50 ticks
+    }
 }
