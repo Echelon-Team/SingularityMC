@@ -59,6 +59,12 @@ interface CompatModule {
     fun initialize()
 
     /**
+     * Zwraca EventBridge dla unified event pipeline. Null jeśli moduł nie ma eventów.
+     * AgentMain używa do wiring ModInitializer callbacks.
+     */
+    fun getEventBridge(): EventBridgeContract? = null
+
+    /**
      * Zwraca mapping tables jako Map<namespace, Map<sourceNazwa, targetNazwa>>.
      * Klucze namespace: "obf-to-mojmap", "srg-to-mojmap", "intermediary-to-mojmap".
      * Wartości: lookup table (derivative works, nie oryginalne pliki Mojanga).

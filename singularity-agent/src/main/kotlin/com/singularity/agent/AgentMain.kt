@@ -264,30 +264,73 @@ object AgentMain {
                 tree.size, jarRegistry.size, agentVersion, moduleVersion
             )
 
-            // Sub 2c: Mod loading pipeline
-            // Step 15: SingularityModRegistry + stub ModInitializer (real wire w Sub 2d/2e)
-            // NOTE: modRegistry assignment DELAYED until after loadMods() — see below.
-            // This ensures modRegistry != null only when all mods are fully registered.
+            // Sub 2d: Load compat module BEFORE mod loading — shims must be available
+            // when mod constructors run (e.g., FMLJavaModLoadingContext.get().getModEventBus())
             val registry = SingularityModRegistry()
+            var compatModule: CompatModule? = null
+            var eventBridge: com.singularity.common.contracts.EventBridgeContract? = null
+
+            val entrypoint = descriptor.entrypoint
+            logger.info("Loading compat module entrypoint: {}", entrypoint)
+            try {
+                val moduleClass = Class.forName(entrypoint, true, singularityClassLoader)
+                val module = moduleClass.getDeclaredConstructor().newInstance() as CompatModule
+                module.configure(registry, VisibilityRules, instanceDir)
+                module.initialize()
+                compatModule = module
+                eventBridge = module.getEventBridge()
+                logger.info(
+                    "Compat module initialized: {} v{} (eventBridge={})",
+                    module.moduleId, module.moduleVersion, eventBridge != null
+                )
+            } catch (e: Exception) {
+                logger.error("Failed to load compat module: {}", e.message, e)
+            }
+
+            // Sub 2c: Mod loading pipeline with REAL event wiring
             val initializer = ModInitializer(
                 onPhase1a = { mod ->
-                    logger.debug("Phase 1a (stub): Forge registry events for '{}' — real wire Sub 2d", mod.modId)
+                    // Phase 1a: Forge RegistryEvents — dispatch through EventBridge
+                    logger.debug("Phase 1a: Forge registry events for '{}'", mod.modId)
+                    eventBridge?.dispatch("forge:RegistryEvent", mod)
                 },
                 onPhase1b = { mod ->
-                    logger.debug("Phase 1b (stub): Fabric onInitialize for '{}' — real wire Sub 2d", mod.modId)
+                    // Phase 1b: Fabric onInitialize — call mod entrypoint classes
+                    logger.debug("Phase 1b: Fabric onInitialize for '{}'", mod.modId)
+                    for (ep in mod.entryPoints) {
+                        try {
+                            val epClass = Class.forName(ep, true, singularityClassLoader)
+                            val instance = epClass.getDeclaredConstructor().newInstance()
+                            // Fabric ModInitializer interface: void onInitialize()
+                            val onInit = epClass.getMethod("onInitialize")
+                            onInit.invoke(instance)
+                            logger.debug("Called onInitialize() on '{}'", ep)
+                        } catch (e: VirtualMachineError) {
+                            throw e
+                        } catch (e: Throwable) {
+                            if (e is InterruptedException) Thread.currentThread().interrupt()
+                            logger.error("Failed to call entrypoint '{}' for mod '{}': {}", ep, mod.modId, e.message, e)
+                        }
+                    }
+                    eventBridge?.dispatch("fabric:ModInitialize", mod)
                 },
                 onPhase2 = { mod ->
-                    logger.debug("Phase 2 (stub): FMLCommonSetup for '{}' — real wire Sub 2d", mod.modId)
+                    // Phase 2: Forge FMLCommonSetupEvent
+                    logger.debug("Phase 2: FMLCommonSetup for '{}'", mod.modId)
+                    eventBridge?.dispatch("forge:FMLCommonSetupEvent", mod)
                 },
                 onPhase3 = { mod ->
-                    logger.debug("Phase 3 (stub): InterMod events for '{}' — real wire Sub 2d", mod.modId)
+                    // Phase 3: Forge InterModEnqueueEvent
+                    logger.debug("Phase 3: InterMod events for '{}'", mod.modId)
+                    eventBridge?.dispatch("forge:InterModEnqueueEvent", mod)
                 },
                 onPhase4 = {
-                    logger.info("Phase 4 (stub): Load Complete — real wire Sub 2d")
+                    // Phase 4: Load Complete
+                    logger.info("Phase 4: Load Complete")
+                    eventBridge?.dispatch("forge:FMLLoadCompleteEvent", Unit)
                 }
             )
 
-            // Steps 16-20: discovery → parse → deps → dedupe → classloader wire → mixin wire → registry → phased init
             val modsDir = instanceDir.resolve("mods")
             val modLoadResult = ModBootstrap.loadMods(
                 modsDir = modsDir,
@@ -296,31 +339,14 @@ object AgentMain {
                 initializer = initializer
             )
             logger.info(
-                "Sub 2c mod loading complete: {} mods registered, {} mixin configs loaded",
+                "Mod loading complete: {} mods registered, {} mixin configs loaded",
                 modLoadResult.registeredCount, modLoadResult.loadedMixinConfigs.size
             )
 
             // Publish registry AFTER loadMods() — all mods fully registered, no partial state.
-            // Order matters: modRegistry write BEFORE bootstrapComplete write (both @Volatile).
-            // Reader seeing bootstrapComplete=true is guaranteed to see modRegistry != null.
-            // Reader seeing modRegistry != null also knows bootstrap is complete.
             modRegistry = registry
             bootstrapComplete = true
             logger.info("Agent bootstrap COMPLETE — bootstrapComplete=true, modRegistry published")
-
-            // Sub 2d Step 21: Load compat module entrypoint + wire shims
-            val entrypoint = descriptor.entrypoint
-            logger.info("Loading compat module entrypoint: {}", entrypoint)
-            try {
-                val moduleClass = Class.forName(entrypoint, true, singularityClassLoader)
-                val compatModule = moduleClass.getDeclaredConstructor().newInstance() as CompatModule
-                compatModule.configure(registry, VisibilityRules, instanceDir)
-                compatModule.initialize()
-                logger.info("Compat module initialized: {} v{}", compatModule.moduleId, compatModule.moduleVersion)
-            } catch (e: Exception) {
-                logger.error("Failed to load compat module entrypoint '{}': {}", entrypoint, e.message, e)
-                // Non-fatal: agent works without compat module, mods just won't see loader shims
-            }
         } finally {
             // BLOCKER fix (edge-case-hunter): cleanup temp mapping dir gwarantowany
             // nawet przy throw w srodku bootstrap(). deleteRecursively() na Windows

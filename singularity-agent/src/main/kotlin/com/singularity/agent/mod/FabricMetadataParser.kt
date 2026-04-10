@@ -28,7 +28,8 @@ import java.nio.file.Path
  * - "mixins" (opcjonalne) — lista (stringi LUB obiekty z "config" + opcjonalnym "environment")
  * - "depends" (opcjonalne) — mapa modId→versionRange (required)
  * - "suggests" (opcjonalne) — mapa modId→versionRange (optional)
- * - "breaks" (opcjonalne) — mapa modId→versionRange (incompatibilities; nie parsujemy jeszcze)
+ * - "breaks" (opcjonalne) — mapa modId→versionRange (incompatibilities; deferred do loader runtime enforcement)
+ * - "conflicts" (opcjonalne) — mapa modId→versionRange (soft-warn incompatibilities; deferred do loader runtime enforcement)
  * - "recommends" (opcjonalne) — mapa modId→versionRange (soft optional; mapujemy jako suggests)
  *
  * Object-form entrypoint (Kotlin mods):
@@ -109,7 +110,7 @@ object FabricMetadataParser {
         root["depends"]?.jsonObject?.forEach { (depModId, versionElement) ->
             dependencies.add(
                 ModDependency(
-                    modId = depModId,
+                    modId = depModId.lowercase(),
                     versionRange = extractVersionRange(versionElement),
                     required = true
                 )
@@ -119,7 +120,7 @@ object FabricMetadataParser {
         root["suggests"]?.jsonObject?.forEach { (depModId, versionElement) ->
             dependencies.add(
                 ModDependency(
-                    modId = depModId,
+                    modId = depModId.lowercase(),
                     versionRange = extractVersionRange(versionElement),
                     required = false
                 )
@@ -131,17 +132,16 @@ object FabricMetadataParser {
         root["recommends"]?.jsonObject?.forEach { (depModId, versionElement) ->
             dependencies.add(
                 ModDependency(
-                    modId = depModId,
+                    modId = depModId.lowercase(),
                     versionRange = extractVersionRange(versionElement),
                     required = false
                 )
             )
         }
 
-        // NOTE: Fabric spec also defines `breaks` (hard-fail if mod present) and `conflicts`
-        // (soft-warn if present). We intentionally DO NOT parse/enforce these in the launcher —
-        // incompatibility enforcement is the LOADER's responsibility at runtime, not ours.
-        // Launcher discovers + presents; loader enforces. See design spec sekcja 5A.3.
+        // Fabric spec defines `breaks` (hard-fail if mod present) and `conflicts` (soft-warn if present).
+        // Deferred do loader runtime enforcement — launcher discovers + presents, loader enforces.
+        // See design spec sekcja 5A.3.
 
         logger.debug(
             "Parsed Fabric mod: {} v{} ({} deps, {} mixins, {} entrypoints)",
