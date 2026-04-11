@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
             <defs>
-                <linearGradient id="aether-haze" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="aether-haze" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
                     <stop offset="0%" stop-color="#C89828" stop-opacity="0"/>
                     <stop offset="40%" stop-color="#C89828" stop-opacity="0.05"/>
                     <stop offset="100%" stop-color="#C89828" stop-opacity="0.15"/>
                 </linearGradient>
                 <!-- Island with holystone layer -->
-                <linearGradient id="island-fill" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="island-fill" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
                     <stop offset="0%" stop-color="#5AAA7C"/>
                     <stop offset="28%" stop-color="#4A9A6C"/>
                     <stop offset="34%" stop-color="#C8A860"/>
@@ -16,7 +16,7 @@
                     <stop offset="80%" stop-color="#B0AAB8"/>
                     <stop offset="100%" stop-color="#908898"/>
                 </linearGradient>
-                <linearGradient id="island-far" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="island-far" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
                     <stop offset="0%" stop-color="#6AAA80"/>
                     <stop offset="35%" stop-color="#8B7355"/>
                     <stop offset="70%" stop-color="#A8A0B0"/>

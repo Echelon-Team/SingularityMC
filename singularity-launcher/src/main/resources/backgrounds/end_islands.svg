@@ -1,38 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
             <defs>
-                <linearGradient id="end-fog" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="end-fog" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
                     <stop offset="0%" stop-color="#2F195F" stop-opacity="0"/>
                     <stop offset="30%" stop-color="#2F195F" stop-opacity="0.12"/>
                     <stop offset="70%" stop-color="#2F195F" stop-opacity="0.35"/>
                     <stop offset="100%" stop-color="#2A1850" stop-opacity="0.55"/>
                 </linearGradient>
-                <linearGradient id="endstone" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="endstone" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
                     <stop offset="0%" stop-color="#DDDFA5"/>
                     <stop offset="42%" stop-color="#D0D298"/>
-                    <stop offset="52%" stop-color="#5A3498"/>
-                    <stop offset="100%" stop-color="#3A2068"/>
+                    <stop offset="52%" stop-color="#8B6AB8"/>
+                    <stop offset="100%" stop-color="#5A3888"/>
                 </linearGradient>
-                <linearGradient id="endstone-far" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="endstone-far" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
                     <stop offset="0%" stop-color="#B8BA85"/>
-                    <stop offset="40%" stop-color="#4A2878"/>
-                    <stop offset="100%" stop-color="#2A1850"/>
+                    <stop offset="40%" stop-color="#6A4098"/>
+                    <stop offset="100%" stop-color="#4A2878"/>
                 </linearGradient>
                 <!-- End crystal: magenta/pink core, NOT gold -->
-                <radialGradient id="crystal-glow">
+                <radialGradient id="crystal-glow" gradientUnits="objectBoundingBox">
                     <stop offset="0%" stop-color="#FF66AA" stop-opacity="0.95"/>
                     <stop offset="30%" stop-color="#E060A0" stop-opacity="0.6"/>
                     <stop offset="60%" stop-color="#DA73DE" stop-opacity="0.3"/>
                     <stop offset="100%" stop-color="#DA73DE" stop-opacity="0"/>
                 </radialGradient>
                 <!-- Pillar obsidian gradient -->
-                <linearGradient id="obsidian" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stop-color="#1A0F2B"/>
-                    <stop offset="50%" stop-color="#120A20"/>
-                    <stop offset="100%" stop-color="#0A0614"/>
+                <linearGradient id="obsidian" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+                    <stop offset="0%" stop-color="#2A1F3B"/>
+                    <stop offset="50%" stop-color="#201830"/>
+                    <stop offset="100%" stop-color="#181124"/>
                 </linearGradient>
                 <!-- Dragon beam -->
-                <linearGradient id="dragon-breath" x1="0" y1="0" x2="1" y2="1">
+                <linearGradient id="dragon-breath" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
                     <stop offset="0%" stop-color="#A040C0" stop-opacity="0.3"/>
                     <stop offset="100%" stop-color="#DA73DE" stop-opacity="0"/>
                 </linearGradient>

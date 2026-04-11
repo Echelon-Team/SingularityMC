@@ -1,8 +1,11 @@
 package com.singularity.launcher.ui.components
 
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
@@ -181,23 +184,35 @@ fun SingularitySidebar(
 private fun SidebarHeader(expanded: Boolean) {
     val extra = LocalExtraPalette.current
 
-    Row(
+    // Same delayed fade pattern dla title
+    val titleAlpha by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = if (expanded) 150 else 100,
+            delayMillis = if (expanded) 220 else 0,
+            easing = LinearEasing
+        ),
+        label = "sidebar_header_title_alpha"
+    )
+
+    // Box absolute positioning — logo lewy, title offset po logo
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp)  // prototyp: sidebar-header min-height 56px
-            .padding(horizontal = 18.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .heightIn(min = 56.dp)
+            .padding(horizontal = 18.dp, vertical = 16.dp)
     ) {
-        // Gradient box 24x24 z literą "S"
+        // Gradient box 24x24 z literą "S" — always on start
         Box(
             modifier = Modifier
+                .align(Alignment.CenterStart)
                 .size(24.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(
                     Brush.linearGradient(
                         colors = listOf(extra.playGradientStart, extra.playGradientEnd),
                         start = Offset(0f, 0f),
-                        end = Offset.Infinite  // 135deg approximation
+                        end = Offset.Infinite
                     )
                 ),
             contentAlignment = Alignment.Center
@@ -210,15 +225,19 @@ private fun SidebarHeader(expanded: Boolean) {
             )
         }
 
-        if (expanded) {
-            Spacer(Modifier.width(12.dp))
-            Text(
-                text = "SingularityMC",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = extra.textPrimary
-            )
-        }
+        // Title absolute-positioned z alpha fade
+        Text(
+            text = "SingularityMC",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = extra.textPrimary,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 36.dp)  // logo 24dp + gap 12dp = 36dp
+                .alpha(titleAlpha)
+        )
     }
 }
 
@@ -255,8 +274,22 @@ private fun SidebarItem(
     val i18n = LocalI18n.current
     val screenLabel = i18n[screen.displayKey]
 
+    // Text alpha z delay — czeka aż sidebar width animation skończy się (250ms)
+    val textAlpha by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = if (expanded) 150 else 100,
+            delayMillis = if (expanded) 220 else 0,
+            easing = LinearEasing
+        ),
+        label = "sidebar_item_text_alpha"
+    )
+
     val content: @Composable () -> Unit = {
-        Row(
+        // Box absolute positioning — Icon na lewej krawędzi, Text offset 46dp od startu.
+        // Layout jest STABILNY niezależnie od expanded state — icon zawsze na tej samej
+        // pozycji, text pojawia się z alpha fade gdy expanded. Parent Surface clipuje overflow.
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 2.dp)
@@ -269,26 +302,29 @@ private fun SidebarItem(
                     onClick = onClick
                 )
                 .heightIn(min = 40.dp)  // prototyp: nav-item min-height 40px
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
             Icon(
                 painter = painterResource("icons/${screen.iconKey}.svg"),
                 contentDescription = screenLabel,
                 tint = iconTint,
-                modifier = Modifier.size(18.dp)  // prototyp: nav-icon svg 18x18
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .size(18.dp)
             )
-            // Simple `if (expanded)` — najprostsze rozwiązanie. AnimatedVisibility + alpha
-            // tricks powodowały layout jumps (sidebar skakał kilka pikseli w pionie).
-            if (expanded) {
-                Spacer(Modifier.width(16.dp))
-                Text(
-                    text = screenLabel,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = textColor,
-                    maxLines = 1
-                )
-            }
+            // Text absolute-positioned przy start = iconWidth 18dp + spacer 16dp = 34dp
+            // `softWrap = false` i brak wrapping → text jest zawsze jedną linią
+            Text(
+                text = screenLabel,
+                style = MaterialTheme.typography.bodyMedium,
+                color = textColor,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 34.dp)
+                    .alpha(textAlpha)
+            )
         }
     }
 
