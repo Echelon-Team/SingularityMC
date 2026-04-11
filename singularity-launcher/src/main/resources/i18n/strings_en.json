@@ -287,6 +287,14 @@
   "common.yes": "Yes",
   "common.no": "No",
 
+  "skins.title": "Skins",
+  "skins.upload": "Upload skin",
+  "skins.upload.title": "Select skin PNG file",
+  "skins.empty.title": "No skins",
+  "skins.empty.subtitle": "Upload a 64x64 or 64x32 PNG file",
+  "skins.select_to_preview": "Click a skin to see preview",
+  "skins.premium_required": "Skin upload requires premium account (Microsoft Auth — Sub 5)",
+
   "screenshots.title": "Screenshots",
   "screenshots.filter.all": "All",
   "screenshots.empty.title": "No screenshots",

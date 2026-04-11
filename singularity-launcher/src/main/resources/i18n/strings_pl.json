@@ -280,6 +280,14 @@
   "common.yes": "Tak",
   "common.no": "Nie",
 
+  "skins.title": "Skiny",
+  "skins.upload": "Prześlij skin",
+  "skins.upload.title": "Wybierz plik skin PNG",
+  "skins.empty.title": "Brak skinów",
+  "skins.empty.subtitle": "Prześlij plik PNG 64x64 lub 64x32",
+  "skins.select_to_preview": "Kliknij skin aby wyświetlić podgląd",
+  "skins.premium_required": "Upload skinów wymaga konta premium (Microsoft Auth — Sub 5)",
+
   "screenshots.title": "Screenshoty",
   "screenshots.filter.all": "Wszystkie",
   "screenshots.empty.title": "Brak screenshotów",
