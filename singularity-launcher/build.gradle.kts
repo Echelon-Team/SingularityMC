@@ -23,6 +23,7 @@ dependencies {
     implementation(libs.bundles.logging)
 
     testImplementation(libs.bundles.testing)
+    testImplementation(libs.ktor.client.mock)
 }
 
 tasks.test {
