@@ -48,6 +48,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.LaunchedEffect
+import com.singularity.launcher.config.LocalI18n
+import com.singularity.launcher.ui.di.LocalAuthManager
 import com.singularity.launcher.ui.navigation.LocalNavigator
 import com.singularity.launcher.ui.navigation.Screen
 import com.singularity.launcher.ui.theme.LocalExtraPalette
@@ -248,6 +251,9 @@ private fun SidebarItem(
         else -> Color.Transparent
     }
 
+    val i18n = LocalI18n.current
+    val screenLabel = i18n[screen.displayKey]
+
     val content: @Composable () -> Unit = {
         Row(
             modifier = Modifier
@@ -267,14 +273,14 @@ private fun SidebarItem(
         ) {
             Icon(
                 painter = painterResource("icons/${screen.iconKey}.svg"),
-                contentDescription = screen.name,
+                contentDescription = screenLabel,
                 tint = iconTint,
                 modifier = Modifier.size(18.dp)  // prototyp: nav-icon svg 18x18
             )
             if (expanded) {
                 Spacer(Modifier.width(16.dp))
                 Text(
-                    text = screen.displayKey,  // TODO Task 6: LocalI18n.current[screen.displayKey]
+                    text = screenLabel,
                     style = MaterialTheme.typography.bodyMedium,
                     color = textColor
                 )
@@ -294,7 +300,7 @@ private fun SidebarItem(
                     shadowElevation = 4.dp
                 ) {
                     Text(
-                        text = screen.displayKey,  // TODO Task 6: LocalI18n
+                        text = screenLabel,
                         color = extra.textPrimary,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
@@ -315,10 +321,21 @@ private fun SidebarItem(
 @Composable
 private fun SidebarAvatar(
     expanded: Boolean,
-    onClick: () -> Unit,
-    accountNick: String = "Guest"  // TODO Task 23 AccountOverlay: wire AccountViewModel
+    onClick: () -> Unit
 ) {
     val extra = LocalExtraPalette.current
+    val authManager = LocalAuthManager.current
+    val i18n = LocalI18n.current
+
+    // Load active account nick asynchronously
+    var accountNick by remember { mutableStateOf(i18n["account.guest"]) }
+    LaunchedEffect(authManager) {
+        try {
+            accountNick = authManager.getActiveAccount()?.profile?.name ?: i18n["account.guest"]
+        } catch (e: Exception) {
+            accountNick = i18n["account.guest"]
+        }
+    }
 
     val content: @Composable () -> Unit = {
         Box(

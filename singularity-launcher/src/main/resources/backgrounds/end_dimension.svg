@@ -1,6 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
     <defs>
+        <linearGradient id="sky-gradient" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#0A0614"/>
+            <stop offset="35%" stop-color="#14121D"/>
+            <stop offset="70%" stop-color="#1B1028"/>
+            <stop offset="100%" stop-color="#2F195F"/>
+        </linearGradient>
+        <radialGradient id="moon-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#F4E8B0" stop-opacity="1"/>
+            <stop offset="40%" stop-color="#DDDFA5" stop-opacity="0.95"/>
+            <stop offset="55%" stop-color="#C8B880" stop-opacity="0.6"/>
+            <stop offset="75%" stop-color="#8060A0" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="#DA73DE" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="moon-halo" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#DDDFA5" stop-opacity="0.18"/>
+            <stop offset="60%" stop-color="#A070C0" stop-opacity="0.08"/>
+            <stop offset="100%" stop-color="#DA73DE" stop-opacity="0"/>
+        </radialGradient>
         <linearGradient id="end-fog" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stop-color="#2F195F" stop-opacity="0"/>
             <stop offset="30%" stop-color="#2F195F" stop-opacity="0.12"/>
@@ -34,6 +52,50 @@
             <stop offset="100%" stop-color="#DA73DE" stop-opacity="0"/>
         </linearGradient>
     </defs>
+
+    <!-- Full sky background — dark purple gradient from top to bottom -->
+    <rect x="0" y="0" width="1600" height="900" fill="url(#sky-gradient)"/>
+
+    <!-- Moon halo (large diffuse glow around moon) -->
+    <circle cx="1330" cy="190" r="320" fill="url(#moon-halo)"/>
+
+    <!-- Moon (bright luminous sphere in upper right) -->
+    <circle cx="1330" cy="190" r="130" fill="url(#moon-glow)"/>
+
+    <!-- Stars across the sky -->
+    <g fill="#DDDFA5">
+        <circle cx="150" cy="80" r="1.8" opacity="0.9"/>
+        <circle cx="320" cy="45" r="1.2" opacity="0.7"/>
+        <circle cx="480" cy="120" r="2" opacity="0.85"/>
+        <circle cx="650" cy="70" r="1.5" opacity="0.75"/>
+        <circle cx="820" cy="150" r="2.5" opacity="0.95"/>
+        <circle cx="980" cy="55" r="1.3" opacity="0.7"/>
+        <circle cx="200" cy="180" r="1.5" opacity="0.7"/>
+        <circle cx="380" cy="220" r="1" opacity="0.6"/>
+        <circle cx="560" cy="250" r="1.8" opacity="0.8"/>
+        <circle cx="740" cy="200" r="1.2" opacity="0.65"/>
+        <circle cx="920" cy="240" r="2" opacity="0.85"/>
+        <circle cx="100" cy="300" r="1.5" opacity="0.7"/>
+        <circle cx="280" cy="320" r="1" opacity="0.55"/>
+        <circle cx="440" cy="360" r="1.8" opacity="0.75"/>
+        <circle cx="610" cy="310" r="1.3" opacity="0.7"/>
+        <circle cx="780" cy="340" r="2.2" opacity="0.9"/>
+        <circle cx="1000" cy="300" r="1.4" opacity="0.7"/>
+        <circle cx="1130" cy="60" r="1.5" opacity="0.75"/>
+        <circle cx="1450" cy="400" r="1.8" opacity="0.8"/>
+        <circle cx="1550" cy="340" r="1.3" opacity="0.65"/>
+        <circle cx="60" cy="420" r="1" opacity="0.5"/>
+        <circle cx="1510" cy="80" r="1.5" opacity="0.7"/>
+    </g>
+
+    <!-- Pink/purple accent stars -->
+    <g>
+        <circle cx="250" cy="100" r="1.5" fill="#DA73DE" opacity="0.7"/>
+        <circle cx="520" cy="180" r="1.8" fill="#B868C0" opacity="0.65"/>
+        <circle cx="870" cy="90" r="1.2" fill="#DA73DE" opacity="0.6"/>
+        <circle cx="1200" cy="300" r="1.5" fill="#A060B0" opacity="0.7"/>
+        <circle cx="700" cy="260" r="1.3" fill="#DA73DE" opacity="0.55"/>
+    </g>
 
     <rect x="0" y="400" width="1600" height="500" fill="url(#end-fog)"/>
 

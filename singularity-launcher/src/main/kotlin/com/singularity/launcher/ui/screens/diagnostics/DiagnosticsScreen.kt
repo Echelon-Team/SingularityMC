@@ -33,12 +33,16 @@ import androidx.compose.ui.unit.sp
 import com.singularity.launcher.config.LocalI18n
 import com.singularity.launcher.service.InstanceManager
 import com.singularity.launcher.service.ipc.IpcClient
+import com.singularity.launcher.ui.screens.diagnostics.tabs.BenchmarkTab
+import com.singularity.launcher.ui.screens.diagnostics.tabs.CrashAnalyzerTab
+import com.singularity.launcher.ui.screens.diagnostics.tabs.LogsTab
 import com.singularity.launcher.ui.screens.diagnostics.tabs.MonitoringTab
 import com.singularity.launcher.ui.theme.LocalExtraPalette
 
 /**
- * Peer screen Diagnostics z 4 zakładkami: Monitoring (pełny), Benchmark (stub Task 21),
- * Crash Analyzer (Task 21), Logs (Task 21).
+ * Peer screen Diagnostics z 4 zakładkami: Monitoring (pełny), Benchmark (placeholder do
+ * Sub 5 live metrics), Crash Analyzer (parsuje logi/crash reports z instance folders),
+ * Logs (live game logs z LazyColumn + filter).
  *
  * **DisposableEffect (#26 edge-case CRITICAL):** onDispose wywołuje vm.onCleared() który
  * cancels metricsPollJob i wywołuje ipcClient.disconnect(). Bez tego job wycieka.
@@ -49,10 +53,7 @@ import com.singularity.launcher.ui.theme.LocalExtraPalette
 @Composable
 fun DiagnosticsScreen(
     ipcClient: IpcClient,
-    instanceManager: InstanceManager,
-    benchmarkTab: @Composable () -> Unit = { PlaceholderTab("Benchmark — stub (Task 21)") },
-    crashAnalyzerTab: @Composable () -> Unit = { PlaceholderTab("Crash Analyzer (Task 21)") },
-    logsTab: @Composable () -> Unit = { PlaceholderTab("Logs (Task 21)") }
+    instanceManager: InstanceManager
 ) {
     val vm = remember(ipcClient, instanceManager) { DiagnosticsViewModel(ipcClient, instanceManager) }
     DisposableEffect(vm) { onDispose { vm.onCleared() } }
@@ -113,25 +114,10 @@ fun DiagnosticsScreen(
                     state = state,
                     onInstanceChange = vm::setInstance
                 )
-                DiagnosticsTab.BENCHMARK -> benchmarkTab()
-                DiagnosticsTab.CRASH_ANALYZER -> crashAnalyzerTab()
-                DiagnosticsTab.LOGS -> logsTab()
+                DiagnosticsTab.BENCHMARK -> BenchmarkTab(isGameRunning = state.isConnected)
+                DiagnosticsTab.CRASH_ANALYZER -> CrashAnalyzerTab(instanceManager = instanceManager)
+                DiagnosticsTab.LOGS -> LogsTab()
             }
         }
-    }
-}
-
-@Composable
-private fun PlaceholderTab(label: String) {
-    val extra = LocalExtraPalette.current
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = label,
-            color = extra.textMuted,
-            style = MaterialTheme.typography.bodyLarge
-        )
     }
 }

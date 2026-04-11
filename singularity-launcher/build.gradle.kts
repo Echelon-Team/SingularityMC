@@ -34,6 +34,9 @@ tasks.test {
 compose.desktop {
     application {
         mainClass = "com.singularity.launcher.MainKt"
+        // Launcher JVM args — 512MB heap wystarczy (Compose Desktop + Ktor HTTP client + JSON parsing).
+        // Bez tego Compose Desktop bierze ~25% fizycznego RAM (na 16GB = 4GB co jest absurdalne).
+        jvmArgs += listOf("-Xmx512m", "-Xms128m")
         nativeDistributions {
             targetFormats(
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Exe,

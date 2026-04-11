@@ -89,7 +89,7 @@ class HomeViewModel(
                     LastPlayedInfo(
                         instanceId = it.id,
                         instanceName = it.config.name,
-                        iconPath = null,  // TODO Task 12 InstancePanel — iconPath w InstanceConfig
+                        iconPath = null,  // Custom instance icons = Sub 5 (wymaga InstanceConfig.iconPath field w singularity-common)
                         lastPlayedTimestamp = it.lastPlayedAt ?: 0L,
                         minecraftVersion = it.config.minecraftVersion,
                         type = it.config.type

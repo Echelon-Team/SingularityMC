@@ -206,19 +206,35 @@ private fun HomeContinueCard(
 
                 Spacer(Modifier.width(16.dp))
 
-                // PLAY button — primary gradient
-                Button(
-                    onClick = onContinueClick,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = extra.playGradientStart  // TODO Task 32: full gradient przez Brush
-                    ),
-                    modifier = Modifier.height(48.dp)
+                // PLAY button — primary gradient (prototyp button-play 135deg)
+                Box(
+                    modifier = Modifier
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(extra.playGradientStart, extra.playGradientEnd)
+                            )
+                        )
+                        .clickable(onClick = onContinueClick)
+                        .padding(horizontal = 24.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = i18n["action.play"],
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = i18n["action.play"],
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
                 }
             }
         }
