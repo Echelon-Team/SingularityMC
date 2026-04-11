@@ -11,8 +11,8 @@ fun main() = application {
         onCloseRequest = ::exitApplication,
         title = "SingularityMC",
         state = rememberWindowState(
-            width = 1280.dp,
-            height = 720.dp
+            width = 1600.dp,
+            height = 900.dp
         )
     ) {
         App()
