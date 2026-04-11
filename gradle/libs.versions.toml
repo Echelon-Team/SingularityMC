@@ -14,6 +14,7 @@ tiny-remapper = "0.13.1"
 mapping-io = "0.7.1"
 jetbrains-annotations = "26.1.0"
 guava = "33.5.0-jre"
+commons-compress = "1.27.1"
 
 [libraries]
 # Kotlin Coroutines
@@ -44,6 +45,9 @@ mapping-io = { module = "net.fabricmc:mapping-io", version.ref = "mapping-io" }
 
 # Guava — wymagana przez Mixin 0.8.7 runtime (com.google.common.collect.ImmutableList)
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
+
+# Apache Commons Compress — dla untar.gz w JavaManager (Task 29)
+apache-commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commons-compress" }
 
 # JetBrains annotations — wymagane przez mapping-io 0.7.1 (@Nullable w sygnaturach)
 jetbrains-annotations = { module = "org.jetbrains:annotations", version.ref = "jetbrains-annotations" }

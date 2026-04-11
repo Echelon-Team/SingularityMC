@@ -21,6 +21,7 @@ dependencies {
     implementation(libs.bundles.ktor.client)
     implementation(libs.serialization.json)
     implementation(libs.bundles.logging)
+    implementation(libs.apache.commons.compress) // untar.gz dla JavaManager Task 29
 
     testImplementation(libs.bundles.testing)
     testImplementation(libs.ktor.client.mock)
