@@ -1,11 +1,13 @@
 package com.singularity.launcher.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.ui.draw.alpha
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
@@ -184,17 +186,6 @@ fun SingularitySidebar(
 private fun SidebarHeader(expanded: Boolean) {
     val extra = LocalExtraPalette.current
 
-    // Same delayed fade pattern as SidebarItem
-    val titleAlpha by animateFloatAsState(
-        targetValue = if (expanded) 1f else 0f,
-        animationSpec = tween(
-            durationMillis = if (expanded) 150 else 100,
-            delayMillis = if (expanded) 200 else 0,
-            easing = LinearEasing
-        ),
-        label = "sidebar_header_title_alpha"
-    )
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -224,15 +215,28 @@ private fun SidebarHeader(expanded: Boolean) {
             )
         }
 
-        // Same pattern as SidebarItem — text always in composition dla stabilnego layoutu
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = "SingularityMC",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.alpha(titleAlpha),
-            fontWeight = FontWeight.Bold,
-            color = extra.textPrimary
-        )
+        // AnimatedVisibility for title — same pattern as SidebarItem
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandHorizontally(
+                animationSpec = tween(180, delayMillis = 220, easing = FastOutSlowInEasing),
+                expandFrom = Alignment.Start
+            ) + fadeIn(tween(180, delayMillis = 220)),
+            exit = shrinkHorizontally(
+                animationSpec = tween(150, easing = FastOutSlowInEasing),
+                shrinkTowards = Alignment.Start
+            ) + fadeOut(tween(100))
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = "SingularityMC",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = extra.textPrimary
+                )
+            }
+        }
     }
 }
 
@@ -269,18 +273,6 @@ private fun SidebarItem(
     val i18n = LocalI18n.current
     val screenLabel = i18n[screen.displayKey]
 
-    // Text fade-in delay: czeka aż sidebar width animation skończy się (250ms) przed fade-in
-    // Przy collapse: natychmiast fade-out żeby text nie był widoczny podczas shrinking width
-    val textAlpha by animateFloatAsState(
-        targetValue = if (expanded) 1f else 0f,
-        animationSpec = tween(
-            durationMillis = if (expanded) 150 else 100,
-            delayMillis = if (expanded) 200 else 0,  // Wait ~200ms dla width animation
-            easing = LinearEasing
-        ),
-        label = "sidebar_item_text_alpha"
-    )
-
     val content: @Composable () -> Unit = {
         Row(
             modifier = Modifier
@@ -304,18 +296,30 @@ private fun SidebarItem(
                 tint = iconTint,
                 modifier = Modifier.size(18.dp)  // prototyp: nav-icon svg 18x18
             )
-            // Text ALWAYS w composition z alpha fade — stabilny layout, icon nie skacze.
-            // `if (textAlpha > 0f)` usuwa text z composition → Row re-layouts → icon jump
-            // podczas collapse animation. Parent Surface width animation robi clipping
-            // sam, text poza bounds nie jest widoczny.
-            Spacer(Modifier.width(16.dp))
-            Text(
-                text = screenLabel,
-                style = MaterialTheme.typography.bodyMedium,
-                color = textColor,
-                maxLines = 1,
-                modifier = Modifier.alpha(textAlpha)
-            )
+            // AnimatedVisibility — Compose handles layout smoothly podczas expand/collapse.
+            // Expand: wait 200ms dla width animation, potem slide in + fade text w 180ms.
+            // Collapse: instant slide out + fade w 150ms (szybciej niż width shrink).
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandHorizontally(
+                    animationSpec = tween(180, delayMillis = 220, easing = FastOutSlowInEasing),
+                    expandFrom = Alignment.Start
+                ) + fadeIn(tween(180, delayMillis = 220)),
+                exit = shrinkHorizontally(
+                    animationSpec = tween(150, easing = FastOutSlowInEasing),
+                    shrinkTowards = Alignment.Start
+                ) + fadeOut(tween(100))
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.width(16.dp))
+                    Text(
+                        text = screenLabel,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = textColor,
+                        maxLines = 1
+                    )
+                }
+            }
         }
     }
 

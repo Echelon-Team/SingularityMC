@@ -50,8 +50,10 @@ fun EndBackground(modifier: Modifier = Modifier) {
     val haloPurple = Color(red = 0x7F / 255f, green = 0x3F / 255f, blue = 0xB2 / 255f, alpha = 1f)
 
     // Moon colors — solid dark base disc + bright center gradient
-    val moonDarkBase = Color(red = 0x3A / 255f, green = 0x20 / 255f, blue = 0x68 / 255f, alpha = 1f)
-    val moonBrightCore = Color(red = 0xF4 / 255f, green = 0xE8 / 255f, blue = 0xB0 / 255f, alpha = 1f)
+    // Ściemniony purple (prototype feel: deep purple moon) — 40% darker niż było
+    val moonDarkBase = Color(red = 0x20 / 255f, green = 0x12 / 255f, blue = 0x3A / 255f, alpha = 1f)
+    // Bright core też ściemniony o 40%
+    val moonBrightCore = Color(red = 0x92 / 255f, green = 0x8C / 255f, blue = 0x6A / 255f, alpha = 1f)
 
     Box(modifier = modifier.fillMaxSize()) {
         // Canvas layer 1 — sky base + ambient + moon + stars

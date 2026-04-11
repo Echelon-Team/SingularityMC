@@ -34,11 +34,11 @@ fun AetherBackground(modifier: Modifier = Modifier) {
     val density = LocalDensity.current
 
     // Prototype --base dla aether = #9EBCD2 (sky blue — rich saturated)
-    // Sky gradient matching prototype feel — DOMINATING blue, subtle golden low
+    // BLUE dominuje, golden tylko bardzo subtle hint przy samym dole (Mateusz: za dużo pomarańczu)
     val skyTopLight = Color(red = 0xBE / 255f, green = 0xD9 / 255f, blue = 0xEC / 255f, alpha = 1f)  // very light blue top
     val skyMid = Color(red = 0x9E / 255f, green = 0xBC / 255f, blue = 0xD2 / 255f, alpha = 1f)      // --base
-    val skyLow = Color(red = 0xA8 / 255f, green = 0xC8 / 255f, blue = 0xD8 / 255f, alpha = 1f)      // slightly paler blue
-    val goldenHint = Color(red = 0xC8 / 255f, green = 0xB0 / 255f, blue = 0x78 / 255f, alpha = 1f)  // subtle golden horizon
+    val skyLow = Color(red = 0xA8 / 255f, green = 0xC0 / 255f, blue = 0xD0 / 255f, alpha = 1f)      // paler blue lower
+    val skyBottom = Color(red = 0xB0 / 255f, green = 0xBE / 255f, blue = 0xC4 / 255f, alpha = 1f)   // very subtle greyish blue
 
     val skyBlueTop = Color(red = 0x2B / 255f, green = 0x7A / 255f, blue = 0xE0 / 255f, alpha = 1f)
     val greenGround = Color(red = 0x4C / 255f, green = 0xAF / 255f, blue = 0x6A / 255f, alpha = 1f)
@@ -46,7 +46,6 @@ fun AetherBackground(modifier: Modifier = Modifier) {
     val sunBright = Color(red = 0xF5 / 255f, green = 0xC8 / 255f, blue = 0x3C / 255f, alpha = 1f)
     val sunGold = Color(red = 0xE6 / 255f, green = 0xAF / 255f, blue = 0x28 / 255f, alpha = 1f)
     val sunDeep = Color(red = 0xD4 / 255f, green = 0x9B / 255f, blue = 0x1E / 255f, alpha = 1f)
-    val sunSolidBase = Color(red = 0xE8 / 255f, green = 0xBA / 255f, blue = 0x30 / 255f, alpha = 1f)
     val cloudWhite = Color.White
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -55,45 +54,34 @@ fun AetherBackground(modifier: Modifier = Modifier) {
             val w = size.width
             val h = size.height
 
-            // 1. Sky gradient — NIE dominant golden, blue dominuje (90% blue, subtle gold bottom)
+            // 1. Sky gradient — 95% blue dominance, very subtle warm hint na samym dole
             drawRect(
                 brush = Brush.verticalGradient(
                     colorStops = arrayOf(
                         0.0f to skyTopLight,
                         0.35f to skyMid,
-                        0.70f to skyLow,
-                        1.0f to goldenHint
+                        0.75f to skyLow,
+                        1.0f to skyBottom
                     )
                 )
             )
 
-            // 2. Prototype .bg-glow subtle overlays
+            // 2. Prototype .bg-glow subtle overlays — ZMNIEJSZONE alphas golden
             drawRect(
                 brush = Brush.verticalGradient(
                     colorStops = arrayOf(
                         0.0f to skyBlueTop.copy(alpha = 0.05f),
-                        0.4f to Color.Transparent,
-                        0.75f to goldenHint.copy(alpha = 0.06f),
-                        1.0f to goldenHorizon.copy(alpha = 0.10f)
+                        0.5f to Color.Transparent,
+                        1.0f to goldenHorizon.copy(alpha = 0.04f)  // bardzo subtle
                     )
                 )
             )
-            // radial green ground bottom left
+            // radial green ground bottom left — bardzo subtle
             drawRect(
                 brush = Brush.radialGradient(
-                    colors = listOf(greenGround.copy(alpha = 0.06f), Color.Transparent),
+                    colors = listOf(greenGround.copy(alpha = 0.04f), Color.Transparent),
                     center = Offset(w * 0.2f, h * 0.85f),
                     radius = w * 0.6f
-                ),
-                topLeft = Offset.Zero,
-                size = Size(w, h)
-            )
-            // radial golden bottom center — subtle horizon glow
-            drawRect(
-                brush = Brush.radialGradient(
-                    colors = listOf(goldenHorizon.copy(alpha = 0.12f), Color.Transparent),
-                    center = Offset(w / 2f, h),
-                    radius = w * 0.9f
                 ),
                 topLeft = Offset.Zero,
                 size = Size(w, h)
@@ -129,11 +117,11 @@ fun AetherBackground(modifier: Modifier = Modifier) {
                 center = sunCenter
             )
 
-            // Inner halo
+            // Inner halo — box-shadow: 0 0 30px 15px rgba(245, 200, 60, 0.2)
             val innerHaloRadius = sunRadius + with(density) { 45.dp.toPx() }
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(sunBright.copy(alpha = 0.3f), Color.Transparent),
+                    colors = listOf(sunBright.copy(alpha = 0.2f), Color.Transparent),
                     center = sunCenter,
                     radius = innerHaloRadius
                 ),
@@ -141,20 +129,13 @@ fun AetherBackground(modifier: Modifier = Modifier) {
                 center = sunCenter
             )
 
-            // SUN SOLID BASE DISC — solid core dla "ball" feel
-            drawCircle(
-                color = sunSolidBase,
-                radius = sunRadius,
-                center = sunCenter
-            )
-
-            // Sun gradient body — bright core z transparent edge
+            // Sun body — radial-gradient tylko (bez solid disc — Mateusz chce poprzednie)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        sunBright.copy(alpha = 0.95f),
-                        sunGold.copy(alpha = 0.7f),
-                        sunDeep.copy(alpha = 0.3f),
+                        sunBright.copy(alpha = 0.65f),
+                        sunGold.copy(alpha = 0.4f),
+                        sunDeep.copy(alpha = 0.15f),
                         Color.Transparent
                     ),
                     center = sunCenter,
