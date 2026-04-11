@@ -21,8 +21,25 @@ data class InstanceRuntimeSettings(
     val gpuAcceleration: Boolean = false,
     val unloadDelaySec: Int = 300,  // 60..3600
     val memoryThresholdPercent: Int = 80,  // 50..95
-    val manualThreadConfig: ManualThreadConfig? = null  // null = auto, non-null = manual
+    val manualThreadConfig: ManualThreadConfig? = null,  // null = auto, non-null = manual
+    val preGenRadius: Int = 64,  // 16..256 chunks
+    val preGenPreset: PreGenPreset = PreGenPreset.MEDIUM
 )
+
+/**
+ * Pre-gen hardware preset — jeden klik ustawia radius dla danego poziomu sprzętu.
+ */
+@Serializable
+enum class PreGenPreset(
+    val displayKey: String,
+    val descriptionKey: String,
+    val defaultRadius: Int
+) {
+    POTATO("pre_gen.preset.potato", "pre_gen.preset.potato.desc", 32),
+    MEDIUM("pre_gen.preset.medium", "pre_gen.preset.medium.desc", 64),
+    HIGH("pre_gen.preset.high", "pre_gen.preset.high.desc", 128),
+    FIREPLACE("pre_gen.preset.fireplace", "pre_gen.preset.fireplace.desc", 256)
+}
 
 /**
  * Manual thread pool configuration — tylko gdy user wybrał manual mode w SettingsModal
