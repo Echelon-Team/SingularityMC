@@ -240,22 +240,54 @@ private fun HomeContinueCard(
         }
     } else {
         // Empty state — brak ostatnio granej instancji
+        val navigator = com.singularity.launcher.ui.navigation.LocalNavigator.current
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = extra.cardBg)
         ) {
-            Column(modifier = Modifier.padding(24.dp)) {
-                Text(
-                    text = i18n["home.continue.title"],
-                    style = MaterialTheme.typography.titleMedium,
-                    color = extra.textPrimary
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = i18n["home.continue.none"],
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = extra.textMuted
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(24.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = i18n["home.continue.title"],
+                        style = MaterialTheme.typography.titleMedium,
+                        color = extra.textPrimary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = i18n["home.continue.none"],
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = extra.textMuted
+                    )
+                }
+
+                Spacer(Modifier.width(16.dp))
+
+                // "+ Nowa instancja" button z gradientem (nie PLAY bo nie ma czego grać)
+                Box(
+                    modifier = Modifier
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(extra.playGradientStart, extra.playGradientEnd)
+                            )
+                        )
+                        .clickable {
+                            navigator.navigateTo(com.singularity.launcher.ui.navigation.Screen.INSTANCES)
+                        }
+                        .padding(horizontal = 24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = i18n["instances.new_instance"],
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
             }
         }
     }
