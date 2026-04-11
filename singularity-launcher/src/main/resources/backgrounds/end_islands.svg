@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-300 -250 2200 1400" preserveAspectRatio="xMidYMid meet">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
             <defs>
                 <linearGradient id="end-fog" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stop-color="#2F195F" stop-opacity="0"/>
                     <stop offset="30%" stop-color="#2F195F" stop-opacity="0.12"/>
                     <stop offset="70%" stop-color="#2F195F" stop-opacity="0.35"/>
-                    <stop offset="100%" stop-color="#1B1028" stop-opacity="0.55"/>
+                    <stop offset="100%" stop-color="#2A1850" stop-opacity="0.55"/>
                 </linearGradient>
                 <linearGradient id="endstone" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stop-color="#DDDFA5"/>
                     <stop offset="42%" stop-color="#D0D298"/>
-                    <stop offset="52%" stop-color="#3A2068"/>
-                    <stop offset="100%" stop-color="#1B1028"/>
+                    <stop offset="52%" stop-color="#5A3498"/>
+                    <stop offset="100%" stop-color="#3A2068"/>
                 </linearGradient>
                 <linearGradient id="endstone-far" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stop-color="#B8BA85"/>
-                    <stop offset="40%" stop-color="#2A1650"/>
-                    <stop offset="100%" stop-color="#14121D"/>
+                    <stop offset="40%" stop-color="#4A2878"/>
+                    <stop offset="100%" stop-color="#2A1850"/>
                 </linearGradient>
                 <!-- End crystal: magenta/pink core, NOT gold -->
                 <radialGradient id="crystal-glow">

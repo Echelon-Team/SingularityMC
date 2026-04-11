@@ -61,8 +61,8 @@ fun EndBackground(modifier: Modifier = Modifier) {
             val w = size.width
             val h = size.height
 
-            // 1. Vertical sky gradient — ciemny góra → lżejszy fiolet dół
-            //    Prototype body solid #14121D ALE z bg-glow + islands tworzy gradient feel
+            // 1. Vertical sky gradient — jednolity bez radial "glow spots" które dawały
+            //    jaśniejszy środek + ciemniejsze rogi. Clean top→bottom gradient only.
             drawRect(
                 brush = Brush.verticalGradient(
                     colorStops = arrayOf(
@@ -71,35 +71,6 @@ fun EndBackground(modifier: Modifier = Modifier) {
                         1.0f to mediumPurpleBottom
                     )
                 )
-            )
-
-            // 2. Ambient glow layers (matching .bg-glow — intensified alpha 2x)
-            drawRect(
-                brush = Brush.radialGradient(
-                    colors = listOf(ambientPurple.copy(alpha = 0.16f), Color.Transparent),
-                    center = Offset(w * 0.7f, h * 0.25f),
-                    radius = w * 0.6f
-                ),
-                topLeft = Offset.Zero,
-                size = Size(w, h)
-            )
-            drawRect(
-                brush = Brush.radialGradient(
-                    colors = listOf(ambientPurple.copy(alpha = 0.12f), Color.Transparent),
-                    center = Offset(w * 0.2f, h * 0.7f),
-                    radius = w * 0.5f
-                ),
-                topLeft = Offset.Zero,
-                size = Size(w, h)
-            )
-            drawRect(
-                brush = Brush.radialGradient(
-                    colors = listOf(deepVoid.copy(alpha = 0.16f), Color.Transparent),
-                    center = Offset(w / 2f, h / 2f),
-                    radius = w * 0.8f
-                ),
-                topLeft = Offset.Zero,
-                size = Size(w, h)
             )
 
             // 3. Moon — 140px top:60 right:100 (pixels from prototype CSS)

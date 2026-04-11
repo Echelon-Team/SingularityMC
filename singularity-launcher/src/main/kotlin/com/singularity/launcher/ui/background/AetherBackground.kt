@@ -54,7 +54,8 @@ fun AetherBackground(modifier: Modifier = Modifier) {
             val w = size.width
             val h = size.height
 
-            // 1. Sky gradient — 95% blue dominance, very subtle warm hint na samym dole
+            // 1. Sky gradient — clean vertical, bez radial spots które tworzyły
+            //    "paski po bokach". Top→bottom only, 95% blue dominance.
             drawRect(
                 brush = Brush.verticalGradient(
                     colorStops = arrayOf(
@@ -64,27 +65,6 @@ fun AetherBackground(modifier: Modifier = Modifier) {
                         1.0f to skyBottom
                     )
                 )
-            )
-
-            // 2. Prototype .bg-glow subtle overlays — ZMNIEJSZONE alphas golden
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0.0f to skyBlueTop.copy(alpha = 0.05f),
-                        0.5f to Color.Transparent,
-                        1.0f to goldenHorizon.copy(alpha = 0.04f)  // bardzo subtle
-                    )
-                )
-            )
-            // radial green ground bottom left — bardzo subtle
-            drawRect(
-                brush = Brush.radialGradient(
-                    colors = listOf(greenGround.copy(alpha = 0.04f), Color.Transparent),
-                    center = Offset(w * 0.2f, h * 0.85f),
-                    radius = w * 0.6f
-                ),
-                topLeft = Offset.Zero,
-                size = Size(w, h)
             )
 
             // 3. Sun — width: 100px top: 50px right: 120px

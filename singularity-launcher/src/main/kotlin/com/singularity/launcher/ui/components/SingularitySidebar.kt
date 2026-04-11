@@ -1,13 +1,8 @@
 package com.singularity.launcher.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandHorizontally
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
@@ -215,27 +210,14 @@ private fun SidebarHeader(expanded: Boolean) {
             )
         }
 
-        // AnimatedVisibility for title — same pattern as SidebarItem
-        AnimatedVisibility(
-            visible = expanded,
-            enter = expandHorizontally(
-                animationSpec = tween(180, delayMillis = 220, easing = FastOutSlowInEasing),
-                expandFrom = Alignment.Start
-            ) + fadeIn(tween(180, delayMillis = 220)),
-            exit = shrinkHorizontally(
-                animationSpec = tween(150, easing = FastOutSlowInEasing),
-                shrinkTowards = Alignment.Start
-            ) + fadeOut(tween(100))
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    text = "SingularityMC",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = extra.textPrimary
-                )
-            }
+        if (expanded) {
+            Spacer(Modifier.width(12.dp))
+            Text(
+                text = "SingularityMC",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = extra.textPrimary
+            )
         }
     }
 }
@@ -296,29 +278,16 @@ private fun SidebarItem(
                 tint = iconTint,
                 modifier = Modifier.size(18.dp)  // prototyp: nav-icon svg 18x18
             )
-            // AnimatedVisibility — Compose handles layout smoothly podczas expand/collapse.
-            // Expand: wait 200ms dla width animation, potem slide in + fade text w 180ms.
-            // Collapse: instant slide out + fade w 150ms (szybciej niż width shrink).
-            AnimatedVisibility(
-                visible = expanded,
-                enter = expandHorizontally(
-                    animationSpec = tween(180, delayMillis = 220, easing = FastOutSlowInEasing),
-                    expandFrom = Alignment.Start
-                ) + fadeIn(tween(180, delayMillis = 220)),
-                exit = shrinkHorizontally(
-                    animationSpec = tween(150, easing = FastOutSlowInEasing),
-                    shrinkTowards = Alignment.Start
-                ) + fadeOut(tween(100))
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Spacer(Modifier.width(16.dp))
-                    Text(
-                        text = screenLabel,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = textColor,
-                        maxLines = 1
-                    )
-                }
+            // Simple `if (expanded)` — najprostsze rozwiązanie. AnimatedVisibility + alpha
+            // tricks powodowały layout jumps (sidebar skakał kilka pikseli w pionie).
+            if (expanded) {
+                Spacer(Modifier.width(16.dp))
+                Text(
+                    text = screenLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = textColor,
+                    maxLines = 1
+                )
             }
         }
     }
