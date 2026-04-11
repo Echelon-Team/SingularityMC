@@ -80,6 +80,12 @@
   "dialog.import.suspicious_list": "Suspicious files",
   "dialog.import.clean": "✓ All files clean",
   "common.ok": "OK",
+  "account.empty": "No accounts — add your first account",
+  "account_overlay.add_offline.title": "Add offline account",
+  "account_overlay.add_offline.subtitle": "Enter nickname to use in-game",
+  "account_overlay.add_offline.nick": "Nick (max 16 chars)",
+  "account_overlay.add_offline.note": "Offline account has no Mojang/Xbox verification. UUID is derived deterministically from nick — same nick always gives same UUID.",
+  "account_overlay.add_offline.create": "Create",
 
   "instance.tab.mods": "Mods",
   "instance.tab.resource_packs": "Resource Packs",
