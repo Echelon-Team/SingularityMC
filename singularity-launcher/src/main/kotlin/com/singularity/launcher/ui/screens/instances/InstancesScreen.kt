@@ -207,9 +207,16 @@ fun InstancesScreen(
         }
     }
 
-    // Wizard dialog (Task 13 — placeholder)
+    // Wizard dialog (Task 13)
     if (state.isWizardOpen) {
-        // NewInstanceWizard(onClose = vm::closeWizard, onCreate = { ... }) — Task 13
+        com.singularity.launcher.ui.screens.instances.wizard.NewInstanceWizard(
+            onCancel = vm::closeWizard,
+            onCreate = { _ ->
+                // Task 32 — real create call via instanceManager.create()
+                vm.closeWizard()
+                vm.refresh()
+            }
+        )
     }
 }
 
