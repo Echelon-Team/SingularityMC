@@ -11,7 +11,8 @@ class LoaderTypeTest {
     @Test
     fun `all expected values exist`() {
         val values = LoaderType.entries
-        assertEquals(6, values.size)
+        assertEquals(7, values.size)
+        assertTrue(values.contains(LoaderType.NONE))
         assertTrue(values.contains(LoaderType.FABRIC))
         assertTrue(values.contains(LoaderType.FORGE))
         assertTrue(values.contains(LoaderType.NEOFORGE))
@@ -35,6 +36,7 @@ class LoaderTypeTest {
         assertTrue(LoaderType.FORGE.isMod)
         assertTrue(LoaderType.NEOFORGE.isMod)
         assertTrue(LoaderType.MULTI.isMod)
+        assertFalse(LoaderType.NONE.isMod)  // vanilla — brak moda
         assertFalse(LoaderType.LIBRARY.isMod)
         assertFalse(LoaderType.UNKNOWN.isMod)
     }

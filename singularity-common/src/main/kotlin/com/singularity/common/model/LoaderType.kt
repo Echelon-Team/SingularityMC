@@ -11,6 +11,9 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 enum class LoaderType {
+    /** Vanilla instance — brak loadera. Użyte dla instancji bez modów. Dodane w Sub 4 Task 11. */
+    NONE,
+
     /** Mod z fabric.mod.json */
     FABRIC,
 
@@ -29,6 +32,6 @@ enum class LoaderType {
     /** JAR bez rozpoznanych metadanych */
     UNKNOWN;
 
-    /** Czy ten typ reprezentuje prawdziwy mod (nie bibliotekę/nieznany) */
-    val isMod: Boolean get() = this != LIBRARY && this != UNKNOWN
+    /** Czy ten typ reprezentuje prawdziwy mod (nie bibliotekę/nieznany/vanilla) */
+    val isMod: Boolean get() = this != LIBRARY && this != UNKNOWN && this != NONE
 }
