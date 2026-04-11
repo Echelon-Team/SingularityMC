@@ -14,6 +14,7 @@ kotlin {
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
+    implementation(compose.materialIconsExtended)
     implementation(project(":singularity-common"))
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.swing) // WYMAGANY dla viewModelScope na Desktop
