@@ -117,8 +117,15 @@ class HomeViewModel(
     }
 
     /**
-     * Ładuje bundled news z `resources/news/news.json`. W przyszłości: HTTP fetch
-     * z SingularityMC GitHub releases / blog feed (post Sub 5 patch).
+     * Ładuje bundled news z `resources/news/news.json`.
+     *
+     * **Status (2026-04-12):** news.json jest pusty `[]` — brak placeholder content.
+     * HomeScreen renderuje empty state ("Brak nowych aktualności").
+     *
+     * **Post-v1 plan:** Mateusz wprowadzi dynamic news pulling z Discord serwera community.
+     * Zamień tę funkcję na `loadDiscordNews()` który fetchuje z Discord API kanał
+     * `#announcements` (nagłówek + krótki opis + data + image — format tak samo jak NewsItem).
+     * Visual (NewsCard) zostaje bez zmian — Mateusz explicit: "dokładnie w tym stylu".
      */
     private fun loadBundledNews(): List<NewsItem> {
         val stream = javaClass.getResourceAsStream("/news/news.json")
