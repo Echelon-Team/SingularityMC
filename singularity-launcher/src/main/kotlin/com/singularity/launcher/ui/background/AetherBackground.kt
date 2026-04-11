@@ -10,6 +10,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -167,11 +168,16 @@ fun AetherBackground(modifier: Modifier = Modifier) {
         }
 
         // Layer 2 — Islands SVG overlay (1:1 copy z prototype HTML bg-islands.aether-el)
+        //
+        // **Horizontal fill fix (2026-04-12):** viewBox -400 -300 2400 1500 (aspect 1.6) +
+        // content w 0..1600 strip → po Crop scale 0.667 zostają 267px paski po bokach.
+        // graphicsLayer(scaleX=1.5) stretchuje horyzontalnie around center. Wertykalna
+        // pozycja bez zmian (scaleY default 1.0). Aspekt wysp 1.5× szerszy niż SVG source.
         Image(
             painter = painterResource("backgrounds/aether_islands.svg"),
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = 1.5f)
         )
     }
 }

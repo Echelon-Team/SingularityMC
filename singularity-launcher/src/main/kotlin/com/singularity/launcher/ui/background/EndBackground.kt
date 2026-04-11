@@ -10,6 +10,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -174,11 +175,19 @@ fun EndBackground(modifier: Modifier = Modifier) {
         }
 
         // Layer 2 — Islands SVG overlay (1:1 copy z prototype HTML bg-islands.end-el)
+        //
+        // **Horizontal fill fix (2026-04-12):** viewBox is -400 -300 2400 1500 (aspect 1.6)
+        // ale content jest tylko w 0..1600 strip. Po Crop scale 0.667, content ląduje
+        // w window x=267..1333 (1066 wide), zostawiając 267px przezroczyste paski po bokach.
+        // graphicsLayer(scaleX=1.5) stretchuje rendering 1.5× horyzontalnie around center —
+        // content (267..1333) → (0..1600) fill exact, transparent margins wypadają z window.
+        // Wertykalna pozycja (y=150..750) pozostaje BEZ ZMIAN (scaleY = 1.0 default).
+        // Trade-off: aspect non-uniform → wyspy ~1.5× szersze niż były. Akceptowalne wg Mateusza.
         Image(
             painter = painterResource("backgrounds/end_islands.svg"),
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = 1.5f)
         )
     }
 }
