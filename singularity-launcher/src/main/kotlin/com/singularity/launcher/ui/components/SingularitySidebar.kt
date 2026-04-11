@@ -224,16 +224,15 @@ private fun SidebarHeader(expanded: Boolean) {
             )
         }
 
-        if (titleAlpha > 0f) {
-            Spacer(Modifier.width(12.dp))
-            Text(
-                text = "SingularityMC",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.alpha(titleAlpha),
-                fontWeight = FontWeight.Bold,
-                color = extra.textPrimary
-            )
-        }
+        // Same pattern as SidebarItem — text always in composition dla stabilnego layoutu
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = "SingularityMC",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.alpha(titleAlpha),
+            fontWeight = FontWeight.Bold,
+            color = extra.textPrimary
+        )
     }
 }
 
@@ -305,18 +304,18 @@ private fun SidebarItem(
                 tint = iconTint,
                 modifier = Modifier.size(18.dp)  // prototyp: nav-icon svg 18x18
             )
-            // Text always in composition z alpha fade — unika brzydkiego rewrapping podczas
-            // width animation. Parent Surface clipuje overflow więc collapsed nie pokazuje text.
-            if (textAlpha > 0f) {
-                Spacer(Modifier.width(16.dp))
-                Text(
-                    text = screenLabel,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = textColor,
-                    maxLines = 1,
-                    modifier = Modifier.alpha(textAlpha)
-                )
-            }
+            // Text ALWAYS w composition z alpha fade — stabilny layout, icon nie skacze.
+            // `if (textAlpha > 0f)` usuwa text z composition → Row re-layouts → icon jump
+            // podczas collapse animation. Parent Surface width animation robi clipping
+            // sam, text poza bounds nie jest widoczny.
+            Spacer(Modifier.width(16.dp))
+            Text(
+                text = screenLabel,
+                style = MaterialTheme.typography.bodyMedium,
+                color = textColor,
+                maxLines = 1,
+                modifier = Modifier.alpha(textAlpha)
+            )
         }
     }
 
