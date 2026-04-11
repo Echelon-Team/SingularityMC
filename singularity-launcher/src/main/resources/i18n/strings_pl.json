@@ -126,5 +126,14 @@
   "account.type.premium": "Premium — Microsoft Account",
   "account.type.offline": "Non-premium — Offline",
   "account.action.set_default": "Ustaw domyślne",
-  "account.action.remove": "Usuń"
+  "account.action.remove": "Usuń",
+
+  "screenshots.title": "Screenshoty",
+  "screenshots.filter.all": "Wszystkie",
+  "screenshots.empty.title": "Brak screenshotów",
+  "screenshots.empty.subtitle": "Zrób screenshot w grze (F2) — pojawi się tutaj",
+  "screenshots.export": "Eksport",
+  "screenshots.preview.load_error": "Nie udało się załadować obrazu",
+  "common.refresh": "Odśwież",
+  "common.close": "Zamknij"
 }
