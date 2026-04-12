@@ -90,7 +90,8 @@ class HomeViewModelTest {
         testDispatcher.scheduler.advanceUntilIdle()
         val state = vm.state.first()
         assertFalse(state.isLoadingNews)
-        assertTrue(state.news.isNotEmpty(), "Should have at least 1 bundled news item")
+        // news.json is empty [] by design — Discord community integration is post-v1
+        assertTrue(state.news.isEmpty(), "News should be empty until Discord integration (post-v1)")
     }
 
     @Test
