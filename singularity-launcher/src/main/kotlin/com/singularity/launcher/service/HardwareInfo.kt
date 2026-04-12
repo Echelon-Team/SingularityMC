@@ -38,6 +38,14 @@ object HardwareInfo {
     }
 
     /**
+     * Max wątków przypisywalnych do launchera/gry. Zawsze totalCores - 2.
+     * Minimum 2 wątki zarezerwowane na system operacyjny — twarda zasada.
+     */
+    val maxAssignableThreads: Int by lazy {
+        (totalCores - 2).coerceAtLeast(2)
+    }
+
+    /**
      * Total physical RAM w MB.
      * Używa `com.sun.management.OperatingSystemMXBean` (NIE `java.lang.management.OperatingSystemMXBean`,
      * ktora NIE ma `totalMemorySize`). Sun-specific API ale działa na wszystkich JVMach

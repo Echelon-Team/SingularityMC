@@ -55,11 +55,11 @@ object NewInstanceWizardLogic {
 
     fun resourcesStepValidate(
         form: NewInstanceForm,
-        totalRam: Int = 16384,
-        totalCores: Int = 16
+        totalRam: Int = com.singularity.launcher.service.HardwareInfo.totalRamMB,
+        maxThreads: Int = com.singularity.launcher.service.HardwareInfo.maxAssignableThreads
     ): Boolean {
         val ramOk = form.ramMb in MIN_RAM_MB..totalRam
-        val threadsOk = form.threads in 2..totalCores
+        val threadsOk = form.threads in 2..maxThreads
         return ramOk && threadsOk
     }
 

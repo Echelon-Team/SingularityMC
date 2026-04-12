@@ -198,7 +198,7 @@ fun ThreadsSlider(
     ResourceSlider(
         value = value,
         onValueChange = onValueChange,
-        range = 2..HardwareInfo.totalCores,
+        range = 2..HardwareInfo.maxAssignableThreads,
         label = label,
         unit = "threads",
         modifier = modifier
