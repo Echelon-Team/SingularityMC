@@ -25,42 +25,48 @@ class MetricsCollectorTest {
         return engine
     }
 
+    private fun readPort(): Int =
+        Files.readString(tempDir.resolve(".singularity/agent-port")).trim().toInt()
+
+    private fun awaitClientCount(server: IpcServer, expected: Int, timeoutMs: Long = 2000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (server.connectedClientCount() == expected) return
+            Thread.sleep(20)
+        }
+        assertEquals(expected, server.connectedClientCount())
+    }
+
+    private fun readMetricsPacket(input: DataInputStream): IpcProtocol.MetricsPayload {
+        val length = input.readInt()
+        val payload = ByteArray(length)
+        input.readFully(payload)
+        return IpcProtocol.decodeMetrics(DataInputStream(payload.inputStream()))
+    }
+
     @Test
-    fun `collector broadcasts metrics to IPC server`() {
+    fun `collector broadcasts real JVM metrics`() {
         val engine = createEngine()
         val server = IpcServer(tempDir)
         server.start()
+        val collector = MetricsCollector(server, engine)
         try {
-            Thread.sleep(200)
-            val port = Files.readString(tempDir.resolve(".singularity/agent-port")).trim().toInt()
-
-            val collector = MetricsCollector(server, engine)
-
-            // Connect client before starting collector
-            Socket("127.0.0.1", port).use { socket ->
-                Thread.sleep(100)
-
+            Socket("127.0.0.1", readPort()).use { socket ->
+                awaitClientCount(server, 1)
                 collector.start()
-                // Wait for at least one broadcast (1s interval + buffer)
-                Thread.sleep(1500)
-                collector.stop()
 
+                // Wait for first broadcast (initialDelay=1s + margin)
+                socket.soTimeout = 3000
                 val input = DataInputStream(socket.getInputStream())
-                val length = input.readInt()
-                assertTrue(length > 0)
+                val decoded = readMetricsPacket(input)
 
-                val payload = ByteArray(length)
-                input.readFully(payload)
-                val decoded = IpcProtocol.decodeMetrics(DataInputStream(payload.inputStream()))
-
-                // RAM should be positive (JVM is running)
-                assertTrue(decoded.ramUsed > 0, "RAM used should be positive")
-                assertTrue(decoded.ramMax > 0, "RAM max should be positive")
-                // Regions/entities/chunks may be 0 (no game running)
+                assertTrue(decoded.ramUsed > 0, "RAM used should be positive, got ${decoded.ramUsed}")
+                assertTrue(decoded.ramMax > 0, "RAM max should be positive, got ${decoded.ramMax}")
                 assertTrue(decoded.activeRegions >= 0)
                 assertTrue(decoded.entityCount >= 0)
             }
         } finally {
+            collector.stop()
             server.stop()
             engine.shutdown()
         }
@@ -71,43 +77,26 @@ class MetricsCollectorTest {
         val engine = createEngine()
         val server = IpcServer(tempDir)
         server.start()
+        val collector = MetricsCollector(server, engine)
         try {
-            Thread.sleep(200)
-            val port = Files.readString(tempDir.resolve(".singularity/agent-port")).trim().toInt()
+            Socket("127.0.0.1", readPort()).use { socket ->
+                awaitClientCount(server, 1)
 
-            val collector = MetricsCollector(server, engine)
-
-            // Simulate 20 ticks in ~1 second
-            Socket("127.0.0.1", port).use { socket ->
-                Thread.sleep(100)
-                collector.start()
-
-                // Simulate ticks
+                // Simulate ticks before starting collector — fill the window
                 repeat(20) {
                     collector.tickCompleted()
-                    Thread.sleep(50) // 20 ticks over 1s
+                    Thread.sleep(50)
                 }
 
-                Thread.sleep(1200) // wait for collection cycle
-                collector.stop()
-
+                collector.start()
+                socket.soTimeout = 3000
                 val input = DataInputStream(socket.getInputStream())
-                // Skip first metric (might be before ticks)
-                var decoded: IpcProtocol.MetricsPayload? = null
-                repeat(3) {
-                    try {
-                        val length = input.readInt()
-                        val payload = ByteArray(length)
-                        input.readFully(payload)
-                        decoded = IpcProtocol.decodeMetrics(DataInputStream(payload.inputStream()))
-                    } catch (_: Exception) {}
-                }
+                val decoded = readMetricsPacket(input)
 
-                // TPS should be > 0 after ticks were reported
-                assertNotNull(decoded)
-                assertTrue(decoded!!.ramUsed > 0)
+                assertTrue(decoded.tps > 0f, "TPS should be > 0 after 20 ticks, got ${decoded.tps}")
             }
         } finally {
+            collector.stop()
             server.stop()
             engine.shutdown()
         }
@@ -118,28 +107,22 @@ class MetricsCollectorTest {
         val engine = createEngine()
         val server = IpcServer(tempDir)
         server.start()
+        val collector = MetricsCollector(server, engine)
         try {
-            Thread.sleep(200)
-            val port = Files.readString(tempDir.resolve(".singularity/agent-port")).trim().toInt()
-
-            val collector = MetricsCollector(server, engine)
             collector.reportFps(144)
 
-            Socket("127.0.0.1", port).use { socket ->
-                Thread.sleep(100)
+            Socket("127.0.0.1", readPort()).use { socket ->
+                awaitClientCount(server, 1)
                 collector.start()
-                Thread.sleep(1500)
-                collector.stop()
 
+                socket.soTimeout = 3000
                 val input = DataInputStream(socket.getInputStream())
-                val length = input.readInt()
-                val payload = ByteArray(length)
-                input.readFully(payload)
-                val decoded = IpcProtocol.decodeMetrics(DataInputStream(payload.inputStream()))
+                val decoded = readMetricsPacket(input)
 
-                assertEquals(144, decoded.fps)
+                assertEquals(144, decoded.fps, "FPS should be 144")
             }
         } finally {
+            collector.stop()
             server.stop()
             engine.shutdown()
         }
@@ -150,65 +133,52 @@ class MetricsCollectorTest {
         val engine = createEngine()
         val server = IpcServer(tempDir)
         server.start()
+        val collector = MetricsCollector(server, engine)
         try {
-            Thread.sleep(200)
-            val port = Files.readString(tempDir.resolve(".singularity/agent-port")).trim().toInt()
-
-            val collector = MetricsCollector(server, engine)
             collector.reportGpuPercent(85.5f)
 
-            Socket("127.0.0.1", port).use { socket ->
-                Thread.sleep(100)
+            Socket("127.0.0.1", readPort()).use { socket ->
+                awaitClientCount(server, 1)
                 collector.start()
-                Thread.sleep(1500)
-                collector.stop()
 
+                socket.soTimeout = 3000
                 val input = DataInputStream(socket.getInputStream())
-                val length = input.readInt()
-                val payload = ByteArray(length)
-                input.readFully(payload)
-                val decoded = IpcProtocol.decodeMetrics(DataInputStream(payload.inputStream()))
+                val decoded = readMetricsPacket(input)
 
-                assertEquals(85.5f, decoded.gpuPercent)
+                assertEquals(85.5f, decoded.gpuPercent, "GPU should be 85.5%")
             }
         } finally {
+            collector.stop()
             server.stop()
             engine.shutdown()
         }
     }
 
     @Test
-    fun `cpuPerThread only includes singularity threads`() {
+    fun `cpuPerThread contains only singularity threads with valid percentages`() {
         val engine = createEngine()
         val server = IpcServer(tempDir)
         server.start()
+        val collector = MetricsCollector(server, engine)
         try {
-            Thread.sleep(200)
-            val port = Files.readString(tempDir.resolve(".singularity/agent-port")).trim().toInt()
-
-            val collector = MetricsCollector(server, engine)
-
-            Socket("127.0.0.1", port).use { socket ->
-                Thread.sleep(100)
+            Socket("127.0.0.1", readPort()).use { socket ->
+                awaitClientCount(server, 1)
                 collector.start()
-                Thread.sleep(1500)
-                collector.stop()
 
+                socket.soTimeout = 3000
                 val input = DataInputStream(socket.getInputStream())
-                val length = input.readInt()
-                val payload = ByteArray(length)
-                input.readFully(payload)
-                val decoded = IpcProtocol.decodeMetrics(DataInputStream(payload.inputStream()))
+                val decoded = readMetricsPacket(input)
 
-                // Should have some singularity threads (dim pools, chunk gen, IPC accept, metrics collector)
-                assertTrue(decoded.cpuPerThread.isNotEmpty(),
-                    "Should have at least some singularity-* threads")
                 // All values should be valid percentages
                 decoded.cpuPerThread.forEach { pct ->
                     assertTrue(pct in 0f..100f, "CPU% should be 0-100, got $pct")
                 }
+                // Protocol limit: max 32 entries
+                assertTrue(decoded.cpuPerThread.size <= 32,
+                    "cpuPerThread should be capped at 32, got ${decoded.cpuPerThread.size}")
             }
         } finally {
+            collector.stop()
             server.stop()
             engine.shutdown()
         }
@@ -219,13 +189,38 @@ class MetricsCollectorTest {
         val engine = createEngine()
         val server = IpcServer(tempDir)
         server.start()
+        val collector = MetricsCollector(server, engine)
         try {
-            val collector = MetricsCollector(server, engine)
             collector.start()
             Thread.sleep(200)
             collector.stop()
             collector.stop() // should not throw
         } finally {
+            server.stop()
+            engine.shutdown()
+        }
+    }
+
+    @Test
+    fun `initial TPS is zero before any ticks`() {
+        val engine = createEngine()
+        val server = IpcServer(tempDir)
+        server.start()
+        val collector = MetricsCollector(server, engine)
+        try {
+            // No tickCompleted() calls — TPS should be 0
+            Socket("127.0.0.1", readPort()).use { socket ->
+                awaitClientCount(server, 1)
+                collector.start()
+
+                socket.soTimeout = 3000
+                val input = DataInputStream(socket.getInputStream())
+                val decoded = readMetricsPacket(input)
+
+                assertEquals(0f, decoded.tps, "Initial TPS should be 0 before any ticks")
+            }
+        } finally {
+            collector.stop()
             server.stop()
             engine.shutdown()
         }

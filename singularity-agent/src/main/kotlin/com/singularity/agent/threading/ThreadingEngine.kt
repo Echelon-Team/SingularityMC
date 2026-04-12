@@ -29,10 +29,10 @@ class ThreadingEngine(
     private val logger = LoggerFactory.getLogger(ThreadingEngine::class.java)
 
     private val poolManager = DimensionPoolManager()
-    private val grids = mutableMapOf<String, RegionGrid>()
-    private val schedulers = mutableMapOf<String, RegionScheduler>()
-    private val tickExecutors = mutableMapOf<String, TickExecutor>()
-    private val watchdogs = mutableMapOf<String, RegionWatchdog>()
+    private val grids = java.util.concurrent.ConcurrentHashMap<String, RegionGrid>()
+    private val schedulers = java.util.concurrent.ConcurrentHashMap<String, RegionScheduler>()
+    private val tickExecutors = java.util.concurrent.ConcurrentHashMap<String, TickExecutor>()
+    private val watchdogs = java.util.concurrent.ConcurrentHashMap<String, RegionWatchdog>()
     private val crossDimensionTransfers = CrossDimensionTransferQueue()
     private var heapMonitor: HeapMonitor? = null
     private var chunkPipeline: ChunkGenerationPipeline<Any>? = null

@@ -33,7 +33,7 @@ class MetricsCollector(
 
     // TPS tracking: zliczamy ticki w oknie 1s
     private val ticksInWindow = AtomicInteger(0)
-    @Volatile private var lastTps: Float = 20f
+    @Volatile private var lastTps: Float = 0f
     private var lastTpsCalcTime = System.nanoTime()
 
     // FPS i GPU ustawiane z render thread
@@ -41,8 +41,8 @@ class MetricsCollector(
     @Volatile private var currentGpuPercent: Float = 0f
 
     // Poprzednie czasy CPU per wątek (do delta %)
-    private var previousCpuTimes = mapOf<Long, Long>()
-    private var previousCpuTimestamp = System.nanoTime()
+    @Volatile private var previousCpuTimes = mapOf<Long, Long>()
+    @Volatile private var previousCpuTimestamp = System.nanoTime()
 
     fun start() {
         scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -50,7 +50,7 @@ class MetricsCollector(
         }
         scheduler!!.scheduleAtFixedRate(
             { collectAndBroadcast() },
-            0, 1, TimeUnit.SECONDS
+            1, 1, TimeUnit.SECONDS
         )
         logger.info("MetricsCollector started (1s interval)")
     }
@@ -96,8 +96,8 @@ class MetricsCollector(
         val ticksElapsed = ticksInWindow.getAndSet(0)
         val timeDeltaSec = (now - lastTpsCalcTime) / 1_000_000_000.0
         lastTpsCalcTime = now
-        if (timeDeltaSec > 0.1) {
-            lastTps = (ticksElapsed / timeDeltaSec).toFloat().coerceAtMost(20f)
+        if (timeDeltaSec > 0.5) {
+            lastTps = (ticksElapsed / timeDeltaSec).toFloat()
         }
 
         // CPU per singularity thread — delta % since last collection

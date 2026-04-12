@@ -15,8 +15,8 @@ class ChunkGenerationPipeline<C>(threadCount: Int) {
     }
 
     fun submitChunk(chunk: C, onComplete: () -> Unit, stageHandler: (C, ChunkStage) -> Unit) {
-        pendingCount.incrementAndGet()
         executor.submit {
+            pendingCount.incrementAndGet()
             try {
                 for (stage in ChunkStage.entries) { stageHandler(chunk, stage) }
                 completedCount.incrementAndGet()

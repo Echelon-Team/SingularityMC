@@ -6,7 +6,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -15,6 +15,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Agent otwiera losowy port, zapisuje go do <instanceDir>/.singularity/agent-port.
  * Launcher łączy się i odbiera strumień metryk (length-prefixed binary packets).
  * Obsługuje wielu klientów jednocześnie (launcher, narzędzia diagnostyczne, testy).
+ *
+ * Thread safety:
+ * - Per-client synchronized writes (prevents packet interleaving)
+ * - CAS-guarded start() (prevents double ServerSocket)
+ * - stop() closes serverSocket first (prevents new accepts after shutdown begins)
  */
 class IpcServer(private val instanceDir: Path) {
     private val logger = LoggerFactory.getLogger(IpcServer::class.java)
@@ -22,12 +27,20 @@ class IpcServer(private val instanceDir: Path) {
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
     private val running = AtomicBoolean(false)
-    private val clients = CopyOnWriteArrayList<Socket>()
+
+    // Per-client: socket + cached DataOutputStream + write lock
+    private data class ClientConnection(
+        val socket: Socket,
+        val output: DataOutputStream,
+        val writeLock: Any = Any()
+    )
+
+    private val clients = ConcurrentHashMap<Socket, ClientConnection>()
 
     fun start() {
-        if (running.get()) return
+        if (!running.compareAndSet(false, true)) return
 
-        serverSocket = ServerSocket(0) // 0 = random free port
+        serverSocket = ServerSocket(0)
         val port = serverSocket!!.localPort
         logger.info("IPC server started on localhost:{}", port)
 
@@ -35,13 +48,15 @@ class IpcServer(private val instanceDir: Path) {
         Files.createDirectories(portFile.parent)
         Files.writeString(portFile, port.toString())
 
-        running.set(true)
         acceptThread = Thread {
             while (running.get()) {
                 try {
-                    val client = serverSocket!!.accept()
-                    logger.info("IPC client connected: {}", client.remoteSocketAddress)
-                    clients.add(client)
+                    val socket = serverSocket!!.accept()
+                    logger.info("IPC client connected: {}", socket.remoteSocketAddress)
+                    clients[socket] = ClientConnection(
+                        socket = socket,
+                        output = DataOutputStream(socket.getOutputStream())
+                    )
                 } catch (e: Exception) {
                     if (running.get()) {
                         logger.warn("Accept failed: {}", e.message)
@@ -60,28 +75,38 @@ class IpcServer(private val instanceDir: Path) {
         val lengthPrefix = IpcProtocol.encodeLengthPrefix(payload.size)
 
         val deadClients = mutableListOf<Socket>()
-        for (client in clients) {
+        for ((socket, conn) in clients) {
             try {
-                val out = DataOutputStream(client.getOutputStream())
-                out.write(lengthPrefix)
-                out.write(payload)
-                out.flush()
+                synchronized(conn.writeLock) {
+                    conn.output.write(lengthPrefix)
+                    conn.output.write(payload)
+                    conn.output.flush()
+                }
             } catch (e: Exception) {
                 logger.debug("Client disconnected: {}", e.message)
-                deadClients.add(client)
+                deadClients.add(socket)
             }
         }
-        clients.removeAll(deadClients.toSet())
+        for (dead in deadClients) {
+            val conn = clients.remove(dead)
+            if (conn != null) {
+                try { conn.socket.close() } catch (_: Exception) {}
+            }
+        }
     }
 
     fun stop() {
         running.set(false)
-        for (client in clients) {
-            try { client.close() } catch (_: Exception) {}
-        }
-        clients.clear()
+
+        // Close server socket FIRST — prevents new accepts
         try { serverSocket?.close() } catch (_: Exception) {}
         acceptThread?.interrupt()
+
+        // Then close all connected clients
+        for ((_, conn) in clients) {
+            try { conn.socket.close() } catch (_: Exception) {}
+        }
+        clients.clear()
 
         // Clean up port file
         try {
