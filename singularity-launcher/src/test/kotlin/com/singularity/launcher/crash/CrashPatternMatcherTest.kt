@@ -84,10 +84,18 @@ class CrashPatternMatcherTest {
     }
 
     @Test
-    fun `categorizes unknown crash as UNKNOWN`() {
+    fun `categorizes unknown third-party crash as MOD_BUG`() {
+        // Any non-vanilla, non-JDK, non-singularity top frame → MOD_BUG
         val parsed = parse("java.lang.RuntimeException", "something",
             "com.unknown.pkg.Foo.bar(Foo.java:1)")
-        assertEquals(CrashPatternMatcher.CrashCategory.UNKNOWN, matcher.categorize(parsed))
+        assertEquals(CrashPatternMatcher.CrashCategory.MOD_BUG, matcher.categorize(parsed))
+    }
+
+    @Test
+    fun `categorizes org embeddedt crash as MOD_BUG`() {
+        val parsed = parse("java.lang.NullPointerException", "null",
+            "org.embeddedt.modernfix.ModernFix.init(ModernFix.java:42)")
+        assertEquals(CrashPatternMatcher.CrashCategory.MOD_BUG, matcher.categorize(parsed))
     }
 
     @Test

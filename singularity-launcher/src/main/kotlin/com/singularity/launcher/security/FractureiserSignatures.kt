@@ -42,8 +42,7 @@ object FractureiserSignatures {
         "password.txt",
         "Discord\\Local Storage",
         "Login Data",
-        // Suspicious download patterns
-        "URLClassLoader",
+        // Suspicious download pattern — URLClassLoader alone is too broad (Fabric loader uses it)
         "new URL(\"http"
     )
 

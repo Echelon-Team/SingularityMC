@@ -40,13 +40,10 @@ class CrashAnalyzer(
         val description = patternMatcher.describe(parsed, category)
         val actions = patternMatcher.suggestActions(category)
 
-        // Read agent logs from disk (no cross-module import)
+        // Read last 200 lines of agent logs from disk (no cross-module import).
+        // Uses BufferedReader from end to avoid loading entire file for large logs.
         val agentLogFile = instanceDir.resolve("logs/agent/singularity-agent.log")
-        val agentLogs = if (Files.exists(agentLogFile)) {
-            Files.readAllLines(agentLogFile).takeLast(200)
-        } else {
-            emptyList()
-        }
+        val agentLogs = readTail(agentLogFile, 200)
 
         val fullReport = reportBuilder.build(
             parsed = parsed,
@@ -64,6 +61,32 @@ class CrashAnalyzer(
             suggestedActions = actions,
             fullReport = fullReport
         )
+    }
+
+    private fun readTail(file: Path, count: Int): List<String> {
+        if (!Files.exists(file)) return emptyList()
+        val size = Files.size(file)
+        if (size == 0L) return emptyList()
+        // For small files, just read all
+        if (size < 1_048_576L) {
+            return Files.readAllLines(file).takeLast(count)
+        }
+        // For large files, read backwards from end
+        java.io.RandomAccessFile(file.toFile(), "r").use { raf ->
+            val lines = mutableListOf<String>()
+            var pos = raf.length() - 1
+            if (pos >= 0) { raf.seek(pos); if (raf.readByte().toInt().toChar() == '\n') pos-- }
+            val buf = StringBuilder()
+            while (pos >= 0 && lines.size < count) {
+                raf.seek(pos)
+                val ch = raf.readByte().toInt().toChar()
+                if (ch == '\n') { lines.add(buf.reverse().toString()); buf.clear() } else buf.append(ch)
+                pos--
+            }
+            if (buf.isNotEmpty() && lines.size < count) lines.add(buf.reverse().toString())
+            lines.reverse()
+            return lines
+        }
     }
 
     fun findRecentCrashes(limit: Int = 10): List<Path> {

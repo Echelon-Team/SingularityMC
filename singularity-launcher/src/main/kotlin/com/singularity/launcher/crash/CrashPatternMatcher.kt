@@ -45,7 +45,8 @@ class CrashPatternMatcher {
             isRenderRelated(parsed.stackTrace) -> CrashCategory.RENDER_ERROR
             topFrame.startsWith("net.minecraft.") && parsed.stackTrace.none { isThirdParty(it) } ->
                 CrashCategory.VANILLA_BUG
-            isModPackage(topFrame) -> CrashCategory.MOD_BUG
+            // Any third-party code (not vanilla, not JDK, not singularity) → MOD_BUG
+            isThirdParty(topFrame) -> CrashCategory.MOD_BUG
             else -> CrashCategory.UNKNOWN
         }
     }
