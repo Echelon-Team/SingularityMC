@@ -70,7 +70,7 @@ fun OnboardingWizard(
                 )
                 Spacer(Modifier.weight(1f))
                 Button(onClick = { viewModel.next() }) {
-                    Text(if (state.currentStep == OnboardingStep.FIRST_INSTANCE) "Zakoncz" else "Dalej")
+                    Text(if (state.currentStep == OnboardingStep.FIRST_INSTANCE) "Zakończ" else "Dalej")
                 }
             }
         }
@@ -89,12 +89,12 @@ private fun WelcomeStep() {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            "Wielowatkowy launcher Minecraft z obsluga Fabric, Forge i NeoForge",
+            "Wielowątkowy launcher Minecraft z obsługą Fabric, Forge i NeoForge",
             color = extra.textSecondary
         )
         Spacer(Modifier.height(24.dp))
         Text(
-            "Ten krotki tutorial przeprowadzi cie przez pierwsza konfiguracje.",
+            "Ten krótki tutorial przeprowadzi cię przez pierwszą konfigurację.",
             color = extra.textPrimary
         )
     }
@@ -114,10 +114,10 @@ private fun LoginStep(viewModel: OnboardingViewModel) {
             enabled = false,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Zaloguj sie kontem Microsoft (Premium)")
+            Text("Zaloguj się kontem Microsoft (Premium)")
         }
         Text(
-            "Logowanie kontem Microsoft nie zostalo jeszcze wprowadzone.",
+            "Logowanie kontem Microsoft nie zostało jeszcze wprowadzone.",
             style = MaterialTheme.typography.bodySmall,
             color = extra.textMuted
         )
@@ -148,23 +148,23 @@ private fun LoginStep(viewModel: OnboardingViewModel) {
 private fun HardwareDetectStep(state: OnboardingState) {
     val extra = LocalExtraPalette.current
     Column(modifier = Modifier.widthIn(max = 400.dp)) {
-        Text("Wykrywanie sprzetu", style = MaterialTheme.typography.titleMedium)
+        Text("Wykrywanie sprzętu", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(16.dp))
 
         if (state.hardwareInfo == null) {
             CircularProgressIndicator()
             Spacer(Modifier.height(8.dp))
-            Text("Skanowanie sprzetu...", color = extra.textMuted)
+            Text("Skanowanie sprzętu...", color = extra.textMuted)
         } else {
             val info = state.hardwareInfo
-            Text("CPU: ${info.cpuCores} rdzeni / ${info.cpuThreads} watkow", color = extra.textPrimary)
+            Text("CPU: ${info.cpuCores} rdzeni / ${info.cpuThreads} wątków", color = extra.textPrimary)
             Text("RAM: ${info.ramMb} MB", color = extra.textPrimary)
             Text("GPU: ${info.gpuName ?: "nie wykryto"}", color = extra.textPrimary)
             Text("OS: ${info.osName}", color = extra.textPrimary)
             Spacer(Modifier.height(16.dp))
 
             Text(
-                "Rekomendowany preset wydajnosci: ${state.recommendedPreset}",
+                "Rekomendowany preset wydajności: ${state.recommendedPreset}",
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -189,13 +189,13 @@ private fun TutorialStep(viewModel: OnboardingViewModel) {
     Column(modifier = Modifier.widthIn(max = 400.dp)) {
         Text("Szybkie wprowadzenie", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(16.dp))
-        Text("- Instancje — tworzysz i zarzadzasz instancjami gry", color = extra.textPrimary)
-        Text("- Modrinth — przegladasz i instalujesz mody", color = extra.textPrimary)
-        Text("- Serwery — tworzysz wlasne serwery", color = extra.textPrimary)
-        Text("- Diagnostyka — monitorujesz wydajnosc", color = extra.textPrimary)
+        Text("- Instancje — tworzysz i zarządzasz instancjami gry", color = extra.textPrimary)
+        Text("- Modrinth — przeglądasz i instalujesz mody", color = extra.textPrimary)
+        Text("- Serwery — tworzysz własne serwery", color = extra.textPrimary)
+        Text("- Diagnostyka — monitorujesz wydajność", color = extra.textPrimary)
         Spacer(Modifier.height(16.dp))
         TextButton(onClick = { viewModel.skipTutorial() }) {
-            Text("Znam sie, pomin tutorial")
+            Text("Znam się, pomiń tutorial")
         }
     }
 }
@@ -205,6 +205,6 @@ private fun FirstInstanceStep() {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Gotowe!", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(16.dp))
-        Text("Kliknij Zakoncz aby przejsc do ekranu glownego i utworzyc pierwsza instancje.")
+        Text("Kliknij Zakończ aby przejść do ekranu głównego i utworzyć pierwszą instancję.")
     }
 }

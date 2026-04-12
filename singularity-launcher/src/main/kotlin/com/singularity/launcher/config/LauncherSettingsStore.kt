@@ -24,7 +24,12 @@ class LauncherSettingsStore(private val settingsFile: Path) {
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true; encodeDefaults = true }
 
     fun load(): LauncherSettings {
-        if (!Files.exists(settingsFile)) return LauncherSettings()
+        if (!Files.exists(settingsFile)) {
+            // First launch — auto-detect system language
+            val systemLang = java.util.Locale.getDefault().language // "pl", "en", "de", etc.
+            val supportedLang = if (systemLang == "pl") "pl" else "en"
+            return LauncherSettings(language = supportedLang)
+        }
         return try {
             val content = Files.readString(settingsFile)
             json.decodeFromString(LauncherSettings.serializer(), content)

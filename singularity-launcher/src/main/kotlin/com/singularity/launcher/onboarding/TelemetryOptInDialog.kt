@@ -25,7 +25,7 @@ fun TelemetryOptInContent(
         Spacer(Modifier.height(16.dp))
 
         Text(
-            "Pomoz ulepszac SingularityMC. Telemetria jest WYLACZONA domyslnie i mozesz zmienic wybor w dowolnym momencie w ustawieniach.",
+            "Pomóż ulepszać SingularityMC. Telemetria jest WYŁĄCZONA domyślnie i możesz zmienić wybór w dowolnym momencie w ustawieniach.",
             color = extra.textSecondary
         )
 
@@ -37,8 +37,8 @@ fun TelemetryOptInContent(
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("Zbieramy:", fontWeight = FontWeight.Bold, color = extra.textPrimary)
                 Spacer(Modifier.height(4.dp))
-                Text("- Wersja MC, launchera, modulu compat", color = extra.textSecondary)
-                Text("- Liczba zainstalowanych modow (NIE nazwy)", color = extra.textSecondary)
+                Text("- Wersja MC, launchera, modułu compat", color = extra.textSecondary)
+                Text("- Liczba zainstalowanych modów (NIE nazwy)", color = extra.textSecondary)
                 Text("- OS, Java, RAM, GPU", color = extra.textSecondary)
                 Text("- Crash count (licznik)", color = extra.textSecondary)
                 Text("- Enhanced vs Vanilla mode", color = extra.textSecondary)
@@ -55,7 +55,7 @@ fun TelemetryOptInContent(
                 Text("NIE zbieramy:", fontWeight = FontWeight.Bold, color = extra.statusSuccess)
                 Spacer(Modifier.height(4.dp))
                 Text("- Nick, IP, dane konta", color = extra.textSecondary)
-                Text("- Nazwy modow, nazwy swiatow", color = extra.textSecondary)
+                Text("- Nazwy modów, nazwy światów", color = extra.textSecondary)
                 Text("- Niczego personalnego", color = extra.textSecondary)
             }
         }
@@ -67,7 +67,7 @@ fun TelemetryOptInContent(
                 onClick = onDecline,
                 modifier = Modifier.weight(1f)
             ) {
-                Text(if (currentChoice == false) "Nie, dziekuje (wybrano)" else "Nie, dziekuje")
+                Text(if (currentChoice == false) "Nie, dziękuję (wybrano)" else "Nie, dziękuję")
             }
             Button(
                 onClick = onAccept,
