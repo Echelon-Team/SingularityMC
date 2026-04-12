@@ -170,9 +170,8 @@ private fun HardwareDetectStep(state: OnboardingState) {
             Text("Skanowanie sprzętu...", color = extra.textMuted)
         } else {
             val info = state.hardwareInfo
-            val ramGb = info.ramMb * 1_048_576L / 1_000_000_000.0
             Text("CPU: ${info.cpuThreads} wątków", color = extra.textPrimary)
-            Text("RAM: ${"%.0f".format(ramGb)} GB", color = extra.textPrimary)
+            Text("RAM: ${info.ramMb / 1000} GB", color = extra.textPrimary)
             Text("GPU: ${info.gpuName ?: "wykrywanie..."}", color = extra.textPrimary)
             Spacer(Modifier.height(16.dp))
 
