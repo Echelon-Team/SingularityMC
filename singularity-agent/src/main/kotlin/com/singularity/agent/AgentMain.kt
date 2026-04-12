@@ -346,19 +346,58 @@ object AgentMain {
             // Publish registry AFTER loadMods() — all mods fully registered, no partial state.
             modRegistry = registry
 
+            // Sub 5: Initialize diagnostic logger (writes to logs/agent/singularity-agent.log)
+            com.singularity.agent.logging.AgentDiagnosticLogger.setupFileLogging(instanceDir)
+
+            // Sub 5: Start loading screen (GLFW window or console fallback)
+            val loadingState = com.singularity.agent.loadingscreen.LoadingScreenState()
+            loadingState.setCurrentStage("Inicjalizacja silnika...")
+            loadingState.setProgress(80)
+            val loadingRenderer = com.singularity.agent.loadingscreen.LoadingScreenRenderer(loadingState)
+            loadingRenderer.start()
+
             // Sub 3: Initialize threading engine AFTER mod loading (OptimizationModDetector needs registry)
+            var threadingEngine: com.singularity.agent.threading.ThreadingEngine? = null
             try {
                 val threadingConfig = com.singularity.agent.threading.config.ThreadingConfig()
-                val threadingEngine = com.singularity.agent.threading.ThreadingEngine(
+                threadingEngine = com.singularity.agent.threading.ThreadingEngine(
                     threadingConfig, registry, com.singularity.agent.threading.region.RegionGroupingHint.NONE
                 )
                 threadingEngine.initialize(listOf("overworld", "the_nether", "the_end"))
                 logger.info("Threading engine initialized")
+                loadingState.setProgress(90)
+                loadingState.setCurrentStage("Uruchamianie IPC...")
             } catch (e: Exception) {
                 logger.error("Threading engine init failed (non-fatal): {}", e.message, e)
             }
 
+            // Sub 5: Start IPC server + metrics collector
+            val ipcServer = com.singularity.agent.ipc.IpcServer(instanceDir)
+            ipcServer.start()
+
+            if (threadingEngine != null) {
+                val metricsCollector = com.singularity.agent.ipc.MetricsCollector(ipcServer, threadingEngine)
+                metricsCollector.start()
+
+                // Shutdown hook for graceful cleanup
+                Runtime.getRuntime().addShutdownHook(Thread {
+                    logger.info("Agent shutdown hook triggered")
+                    metricsCollector.stop()
+                    ipcServer.stop()
+                    loadingRenderer.stop()
+                    threadingEngine.shutdown()
+                    com.singularity.agent.logging.AgentDiagnosticLogger.teardown()
+                })
+            }
+
+            // Loading complete
+            loadingState.setProgress(100)
+            loadingState.setCurrentStage("Gotowe")
+            loadingState.markFinished()
+            loadingRenderer.stop()
+
             bootstrapComplete = true
+            logger.info("Agent fully initialized — ThreadingEngine, IPC, MetricsCollector, LoadingScreen, DiagnosticLogger")
             logger.info("Agent bootstrap COMPLETE — bootstrapComplete=true, modRegistry published")
         } finally {
             // BLOCKER fix (edge-case-hunter): cleanup temp mapping dir gwarantowany
