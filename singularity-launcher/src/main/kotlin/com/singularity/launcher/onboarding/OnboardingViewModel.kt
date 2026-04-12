@@ -56,9 +56,16 @@ class OnboardingViewModel(
 
     private fun detectHardware() {
         viewModelScope.launch {
-            val info = hardwareDetector.detect()
-            val preset = hardwareDetector.recommendPreset(info)
-            updateState { it.copy(hardwareInfo = info, recommendedPreset = preset) }
+            // Phase 1: CPU + RAM (instant, JVM API)
+            val quickInfo = hardwareDetector.detectQuick()
+            val preset = hardwareDetector.recommendPreset(quickInfo)
+            updateState { it.copy(hardwareInfo = quickInfo, recommendedPreset = preset) }
+
+            // Phase 2: GPU (async, may take seconds or timeout)
+            val gpuName = hardwareDetector.detectGpuAsync()
+            if (gpuName != null) {
+                updateState { it.copy(hardwareInfo = it.hardwareInfo?.copy(gpuName = gpuName)) }
+            }
         }
     }
 }

@@ -27,26 +27,31 @@ class HardwareDetector {
     )
 
     suspend fun detect(): HardwareInfo = withContext(Dispatchers.IO) {
-        val cpuThreads = Runtime.getRuntime().availableProcessors()
-        // availableProcessors() returns logical processors — on non-HT CPUs this equals
-        // physical cores, on HT/SMT it's 2x. We can't reliably distinguish without
-        // platform-specific tools, so we report logical count for both fields.
-        val cpuCores = cpuThreads
+        val quick = detectQuick()
+        quick.copy(gpuName = detectGpu())
+    }
 
+    /** CPU + RAM only — instant, no subprocess. */
+    fun detectQuick(): HardwareInfo {
+        val cpuThreads = Runtime.getRuntime().availableProcessors()
         val totalRamBytes = try {
             (ManagementFactory.getOperatingSystemMXBean() as? com.sun.management.OperatingSystemMXBean)?.totalMemorySize
                 ?: (Runtime.getRuntime().maxMemory() * 2)
         } catch (_: Exception) {
             Runtime.getRuntime().maxMemory() * 2
         }
-
-        HardwareInfo(
-            cpuCores = cpuCores,
+        return HardwareInfo(
+            cpuCores = cpuThreads,
             cpuThreads = cpuThreads,
             ramMb = totalRamBytes / (1024 * 1024),
-            gpuName = detectGpu(),
+            gpuName = null,
             osName = "${System.getProperty("os.name")} ${System.getProperty("os.version")}"
         )
+    }
+
+    /** GPU detection — may block up to 7s. Call from coroutine. */
+    suspend fun detectGpuAsync(): String? = withContext(Dispatchers.IO) {
+        detectGpu()
     }
 
     private fun detectGpu(): String? {

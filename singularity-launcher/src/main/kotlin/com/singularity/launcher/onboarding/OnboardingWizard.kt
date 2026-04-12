@@ -71,6 +71,7 @@ fun OnboardingWizard(
                 Spacer(Modifier.weight(1f))
                 val nextEnabled = when (state.currentStep) {
                     OnboardingStep.LOGIN -> state.loginComplete
+                    OnboardingStep.HARDWARE_DETECT -> state.hardwareInfo != null
                     else -> true
                 }
                 Button(
