@@ -62,8 +62,13 @@ class HardwareDetector {
                 .redirectErrorStream(true)
                 .start()
             val output = process.inputStream.bufferedReader().readText()
-            val exited = process.waitFor()
-            if (exited != 0) return null
+            val exited = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+            if (!exited) {
+                process.destroyForcibly()
+                logger.warn("GPU detection timed out after 5s")
+                return null
+            }
+            if (process.exitValue() != 0) return null
 
             parseGpuFromOutput(output, osName)
         } catch (e: Exception) {
