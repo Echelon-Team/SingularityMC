@@ -29,5 +29,6 @@ data class LauncherSettings(
     val autoCheckUpdates: Boolean = true,
     val jvmExtraArgs: String = "",
     val debugLogsEnabled: Boolean = false,
-    val discordRpcEnabled: Boolean = false
+    val discordRpcEnabled: Boolean = false,
+    val telemetryEnabled: Boolean = false
 )

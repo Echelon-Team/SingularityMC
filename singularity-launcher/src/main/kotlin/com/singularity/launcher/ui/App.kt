@@ -205,8 +205,11 @@ fun App() {
             OnboardingWizard(
                 viewModel = onboardingVm,
                 onComplete = {
-                    // Persist — save a default offline account so onboarding doesn't re-show
-                    val updated = launcherSettings.copy(lastActiveAccountId = "offline-default")
+                    val telemetryChoice = onboardingVm.state.value.telemetryAccepted ?: false
+                    val updated = launcherSettings.copy(
+                        lastActiveAccountId = "offline-default",
+                        telemetryEnabled = telemetryChoice
+                    )
                     settingsStore.save(updated)
                     launcherSettings = updated
                     showOnboarding = false
