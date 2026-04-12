@@ -8,6 +8,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,7 +31,12 @@ import com.singularity.launcher.service.ServerManagerImpl
 import com.singularity.launcher.service.auth.AuthManager
 import com.singularity.launcher.service.auth.AuthManagerImpl
 import com.singularity.launcher.service.ipc.IpcClient
-import com.singularity.launcher.service.ipc.IpcClientMock
+import com.singularity.launcher.service.ipc.IpcClientReal
+import com.singularity.launcher.integration.AutoUpdater
+import com.singularity.launcher.integration.DiscordRpcManager
+import com.singularity.launcher.onboarding.HardwareDetector
+import com.singularity.launcher.onboarding.OnboardingViewModel
+import com.singularity.launcher.onboarding.OnboardingWizard
 import com.singularity.launcher.service.java.JavaManager
 import com.singularity.launcher.service.java.JavaManagerImpl
 import com.singularity.launcher.service.modrinth.ModrinthClient
@@ -126,7 +133,27 @@ fun App() {
     }
     val authManager: AuthManager = remember { AuthManagerImpl.default() }
     val modrinthClient: ModrinthClient = remember { ModrinthClientImpl(httpClient) }
-    val ipcClient: IpcClient = remember { IpcClientMock(appScope) }
+    val ipcClient: IpcClient = remember {
+        IpcClientReal(launcherHome.resolve("instances"), appScope)
+    }
+
+    // Discord Rich Presence
+    val discordRpc = remember { DiscordRpcManager(clientId = "SINGULARITYMC_DISCORD_APP_ID") }
+    DisposableEffect(discordRpc) {
+        discordRpc.initialize()
+        discordRpc.updatePresence(DiscordRpcManager.PresenceState(isPlaying = false))
+        onDispose { discordRpc.shutdown() }
+    }
+
+    // Auto-updater (check on startup)
+    val autoUpdater = remember { AutoUpdater(httpClient, currentVersion = "1.0.0") }
+    var updateAvailable by remember { mutableStateOf<AutoUpdater.UpdateAvailable?>(null) }
+    LaunchedEffect(Unit) {
+        updateAvailable = autoUpdater.checkForUpdates()
+    }
+
+    // Onboarding (first-time setup)
+    var showOnboarding by remember { mutableStateOf(launcherSettings.lastActiveAccountId == null) }
 
     // Launch flow coordinator — real MC launch (Home PLAY button + InstancePanel onLaunch)
     val libraryDownloader = remember {
@@ -158,9 +185,23 @@ fun App() {
     DisposableEffect(Unit) {
         onDispose {
             navigator.onCleared()
+            discordRpc.shutdown()
             try { httpClient.close() } catch (e: Exception) { /* ignore */ }
             try { appScope.coroutineContext[Job]?.cancel() } catch (e: Exception) { /* ignore */ }
         }
+    }
+
+    // Onboarding wizard (first launch)
+    if (showOnboarding) {
+        SingularityTheme(themeMode = launcherSettings.theme) {
+            val hardwareDetector = remember { HardwareDetector() }
+            val onboardingVm = remember { OnboardingViewModel(hardwareDetector) }
+            OnboardingWizard(
+                viewModel = onboardingVm,
+                onComplete = { showOnboarding = false }
+            )
+        }
+        return
     }
 
     SingularityTheme(themeMode = launcherSettings.theme) {
