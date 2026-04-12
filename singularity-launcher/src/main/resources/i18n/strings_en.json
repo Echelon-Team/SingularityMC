@@ -228,7 +228,7 @@
   "account.add.offline": "Offline account",
   "account.badge.default": "DEFAULT",
   "account.type.premium": "Premium — Microsoft Account",
-  "account.type.offline": "Non-premium — Offline",
+  "account.type.offline": "Non-premium",
   "account.action.set_default": "Set as default",
   "account.action.remove": "Remove",
 

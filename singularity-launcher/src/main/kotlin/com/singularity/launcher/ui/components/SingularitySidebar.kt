@@ -367,13 +367,16 @@ private fun SidebarAvatar(
     val authManager = LocalAuthManager.current
     val i18n = LocalI18n.current
 
-    // Load active account nick asynchronously
+    // Load active account nick — re-check periodically (account may change after onboarding)
     var accountNick by remember { mutableStateOf(i18n["account.guest"]) }
-    LaunchedEffect(authManager) {
-        try {
-            accountNick = authManager.getActiveAccount()?.profile?.name ?: i18n["account.guest"]
-        } catch (e: Exception) {
-            accountNick = i18n["account.guest"]
+    LaunchedEffect(Unit) {
+        while (true) {
+            try {
+                accountNick = authManager.getActiveAccount()?.profile?.name ?: i18n["account.guest"]
+            } catch (_: Exception) {
+                accountNick = i18n["account.guest"]
+            }
+            kotlinx.coroutines.delay(2000) // re-check every 2s
         }
     }
 
@@ -397,7 +400,35 @@ private fun SidebarAvatar(
     }
 
     if (expanded) {
-        content()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(extra.sidebarHover),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = accountNick.firstOrNull()?.uppercase() ?: "?",
+                    color = extra.textPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = accountNick,
+                color = extra.textPrimary,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1
+            )
+        }
     } else {
         TooltipArea(
             tooltip = {
