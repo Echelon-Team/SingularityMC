@@ -1,17 +1,25 @@
 package com.singularity.launcher.ui.screens.modrinth
 
 import com.singularity.common.model.LoaderType
+import com.singularity.launcher.security.MalwareScanner
+import com.singularity.launcher.service.InstanceManager
 import com.singularity.launcher.service.modrinth.ModrinthClient
 import com.singularity.launcher.service.modrinth.ModrinthError
 import com.singularity.launcher.service.modrinth.ModrinthSearchHit
 import com.singularity.launcher.service.modrinth.ModrinthVersion
+import com.singularity.launcher.service.modrinth.ModrinthVersionFile
 import com.singularity.launcher.viewmodel.BaseViewModel
+import io.ktor.client.*
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.swing.Swing
+import java.nio.file.Files
+import java.nio.file.Path
 
 /**
  * Install dialog state — open przy kliku "Instaluj" w ModrinthCard, zamknięty domyślnie.
@@ -25,16 +33,27 @@ data class InstallDialogState(
 data class ModrinthScreenState(
     val query: String = "",
     val results: List<ModrinthSearchHit> = emptyList(),
-    val lastSuccessResults: List<ModrinthSearchHit> = emptyList(),  // #1 edge-case — keep during filter change
+    val lastSuccessResults: List<ModrinthSearchHit> = emptyList(),
     val isLoading: Boolean = false,
     val error: ModrinthError? = ModrinthError.NoQuery,
     val gameVersion: String = "1.20.1",
-    val loader: String? = null,  // null = all
+    val loader: String? = null,
     val category: String? = null,
-    val sortMode: String = "relevance",  // relevance/downloads/updated/newest
+    val sortMode: String = "relevance",
     val showAllLoaders: Boolean = false,
-    val installDialog: InstallDialogState? = null
+    val installDialog: InstallDialogState? = null,
+    val availableInstances: List<Pair<String, String>> = emptyList(), // id to name
+    val selectedInstanceId: String? = null,
+    val installProgress: InstallProgress? = null
 )
+
+data class InstallProgress(
+    val modName: String,
+    val status: InstallStatus,
+    val message: String = ""
+)
+
+enum class InstallStatus { DOWNLOADING, SCANNING, DONE, ERROR }
 
 /**
  * ModrinthViewModel — live search z debounce (500ms) + cancel-in-flight previous job.
@@ -55,6 +74,8 @@ data class ModrinthScreenState(
  */
 class ModrinthViewModel(
     private val client: ModrinthClient,
+    private val instanceManager: InstanceManager? = null,
+    private val httpClient: HttpClient? = null,
     private val lockedLoader: LoaderType? = null,
     dispatcher: CoroutineDispatcher = Dispatchers.Swing
 ) : BaseViewModel<ModrinthScreenState>(
@@ -65,6 +86,30 @@ class ModrinthViewModel(
 ) {
 
     private var searchJob: Job? = null
+    private val malwareScanner = MalwareScanner()
+
+    init {
+        loadInstances()
+    }
+
+    private fun loadInstances() {
+        if (instanceManager == null) return
+        viewModelScope.launch {
+            try {
+                val instances = instanceManager.getAll().map { it.id to it.config.name }
+                updateState {
+                    it.copy(
+                        availableInstances = instances,
+                        selectedInstanceId = instances.firstOrNull()?.first
+                    )
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun selectInstance(instanceId: String) {
+        updateState { it.copy(selectedInstanceId = instanceId) }
+    }
 
     fun setQuery(query: String) {
         updateState { it.copy(query = query) }
@@ -184,6 +229,72 @@ class ModrinthViewModel(
                     updateState { it.copy(error = mapException(throwable)) }
                 }
             )
+        }
+    }
+
+    fun installMod(version: ModrinthVersion) {
+        val instanceId = state.value.selectedInstanceId
+        if (instanceId == null || instanceManager == null || httpClient == null) {
+            updateState { it.copy(error = ModrinthError.Network("Nie wybrano instancji")) }
+            closeInstallDialog()
+            return
+        }
+
+        val file = version.files.firstOrNull() ?: run {
+            updateState { it.copy(error = ModrinthError.Network("Brak pliku do pobrania")) }
+            closeInstallDialog()
+            return
+        }
+
+        closeInstallDialog()
+        updateState { it.copy(installProgress = InstallProgress(version.name, InstallStatus.DOWNLOADING)) }
+
+        viewModelScope.launch {
+            try {
+                // 1. Find instance mods dir
+                val instance = instanceManager.getById(instanceId) ?: throw Exception("Instancja nie znaleziona")
+                val modsDir = instance.rootDir.resolve("mods")
+                Files.createDirectories(modsDir)
+                val targetFile = modsDir.resolve(file.filename)
+
+                // 2. Download JAR
+                updateState { it.copy(installProgress = InstallProgress(version.name, InstallStatus.DOWNLOADING, file.filename)) }
+                val response = httpClient.get(file.url)
+                val bytes = response.readRawBytes()
+                Files.write(targetFile, bytes)
+
+                // 3. Malware scan
+                updateState { it.copy(installProgress = InstallProgress(version.name, InstallStatus.SCANNING)) }
+                val scanResult = malwareScanner.scan(targetFile)
+
+                if (scanResult.verdict == MalwareScanner.ScanResult.MALICIOUS) {
+                    Files.deleteIfExists(targetFile)
+                    updateState { it.copy(
+                        installProgress = InstallProgress(version.name, InstallStatus.ERROR,
+                            "MALWARE WYKRYTY — plik usunięty: ${scanResult.findings.firstOrNull()}")
+                    ) }
+                    return@launch
+                }
+
+                val warning = if (scanResult.verdict == MalwareScanner.ScanResult.SUSPICIOUS) {
+                    " (Ostrzeżenie: ${scanResult.findings.size} podejrzanych wzorców)"
+                } else ""
+
+                // 4. Done
+                updateState { it.copy(
+                    installProgress = InstallProgress(version.name, InstallStatus.DONE,
+                        "${file.filename} zainstalowany do ${instance.config.name}$warning")
+                ) }
+
+                // Clear progress after 3s
+                delay(3000)
+                updateState { it.copy(installProgress = null) }
+
+            } catch (e: Exception) {
+                updateState { it.copy(
+                    installProgress = InstallProgress(version.name, InstallStatus.ERROR, e.message ?: "Błąd instalacji")
+                ) }
+            }
         }
     }
 

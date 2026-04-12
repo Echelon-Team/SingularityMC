@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
@@ -41,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.singularity.launcher.config.LocalI18n
+import com.singularity.launcher.ui.components.EmptyState
 import com.singularity.launcher.service.ServerManager
 import com.singularity.launcher.service.ServerStatus
 import com.singularity.launcher.ui.components.RunState
@@ -203,6 +206,7 @@ fun ServerPanel(
 
             // Tab content
             Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                val server = state.server
                 when (state.selectedTab) {
                     ServerTab.CONSOLE -> ConsoleTab(
                         lines = state.consoleLines,
@@ -210,7 +214,11 @@ fun ServerPanel(
                         onInputChange = vm::setConsoleInput,
                         onSend = { vm.sendConsoleCommand() }
                     )
-                    else -> PlaceholderTabContent(i18n[state.selectedTab.i18nKey])
+                    ServerTab.MODS -> ServerModsTab(server?.rootDir)
+                    ServerTab.PLAYERS -> ServerPlayersTab(state.consoleLines)
+                    ServerTab.BACKUPS -> ServerBackupsTab(server?.rootDir, i18n)
+                    ServerTab.WORLD -> ServerWorldTab(server?.rootDir, i18n)
+                    ServerTab.NETWORK -> ServerNetworkTab(server?.rootDir, i18n)
                 }
             }
         }
@@ -227,25 +235,187 @@ fun ServerPanel(
 }
 
 @Composable
-private fun PlaceholderTabContent(tabName: String) {
+private fun ServerModsTab(serverDir: java.nio.file.Path?) {
     val extra = LocalExtraPalette.current
     val i18n = LocalI18n.current
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = tabName,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = extra.textPrimary
+    if (serverDir == null) return
+
+    val modsDir = serverDir.resolve("mods")
+    val modFiles = remember(serverDir) {
+        if (java.nio.file.Files.exists(modsDir)) {
+            java.nio.file.Files.list(modsDir).use { s ->
+                s.filter { it.fileName.toString().endsWith(".jar") }
+                    .map { it.fileName.toString() to java.nio.file.Files.size(it) }
+                    .toList()
+            }
+        } else emptyList()
+    }
+
+    if (modFiles.isEmpty()) {
+        EmptyState(
+            title = i18n["server_panel.mods.empty.title"],
+            subtitle = i18n["server_panel.mods.empty.subtitle"]
         )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = i18n["server_panel.tab.coming_soon"],
-            style = MaterialTheme.typography.bodySmall,
-            color = extra.textMuted
+    } else {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            items(modFiles, key = { it.first }) { (name, size) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(name, color = extra.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                    Text("%.1f MB".format(size / (1024f * 1024f)),
+                        color = extra.textMuted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerPlayersTab(consoleLines: List<String>) {
+    val extra = LocalExtraPalette.current
+    val i18n = LocalI18n.current
+
+    // Parse player joins/leaves from console lines
+    val players = remember(consoleLines.size) {
+        val online = mutableSetOf<String>()
+        for (line in consoleLines) {
+            val joinMatch = Regex("""(\w+) joined the game""").find(line)
+            val leaveMatch = Regex("""(\w+) left the game""").find(line)
+            if (joinMatch != null) online.add(joinMatch.groupValues[1])
+            if (leaveMatch != null) online.remove(leaveMatch.groupValues[1])
+        }
+        online.toList().sorted()
+    }
+
+    if (players.isEmpty()) {
+        EmptyState(
+            title = i18n["server_panel.players.empty.title"],
+            subtitle = i18n["server_panel.players.empty.subtitle"]
         )
+    } else {
+        Column {
+            Text("${i18n["server_panel.players.online"]}: ${players.size}",
+                style = MaterialTheme.typography.titleSmall, color = extra.textPrimary)
+            Spacer(Modifier.height(8.dp))
+            players.forEach { name ->
+                Text("  $name", color = extra.textSecondary, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerBackupsTab(serverDir: java.nio.file.Path?, i18n: com.singularity.launcher.config.I18n) {
+    val extra = LocalExtraPalette.current
+    if (serverDir == null) return
+
+    val backupsDir = serverDir.resolve("backups")
+    val backups = remember(serverDir) {
+        if (java.nio.file.Files.exists(backupsDir)) {
+            java.nio.file.Files.list(backupsDir).use { s ->
+                s.filter { it.fileName.toString().endsWith(".zip") }
+                    .map { it.fileName.toString() to java.nio.file.Files.size(it) }
+                    .toList()
+                    .sortedByDescending { it.first }
+            }
+        } else emptyList()
+    }
+
+    if (backups.isEmpty()) {
+        EmptyState(
+            title = i18n["server_panel.backups.empty.title"] ?: "Brak backupow",
+            subtitle = i18n["server_panel.backups.empty.subtitle"] ?: "Utwórz backup świata aby zobaczyć go tutaj."
+        )
+    } else {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            items(backups, key = { it.first }) { (name, size) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(name, color = extra.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                    Text("%.1f MB".format(size / (1024f * 1024f)),
+                        color = extra.textMuted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerWorldTab(serverDir: java.nio.file.Path?, i18n: com.singularity.launcher.config.I18n) {
+    val extra = LocalExtraPalette.current
+    if (serverDir == null) return
+
+    val propsFile = serverDir.resolve("server.properties")
+    val properties = remember(serverDir) {
+        if (java.nio.file.Files.exists(propsFile)) {
+            java.nio.file.Files.readAllLines(propsFile)
+                .filter { it.contains("=") && !it.startsWith("#") }
+                .associate { line ->
+                    val parts = line.split("=", limit = 2)
+                    parts[0].trim() to (parts.getOrNull(1)?.trim() ?: "")
+                }
+        } else emptyMap()
+    }
+
+    val worldProps = listOf("level-name", "level-seed", "level-type", "gamemode",
+        "difficulty", "max-players", "view-distance", "simulation-distance",
+        "spawn-protection", "generate-structures")
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(i18n["server_panel.world.title"] ?: "Swiat",
+            style = MaterialTheme.typography.titleSmall, color = extra.textPrimary)
+        Spacer(Modifier.height(4.dp))
+        worldProps.forEach { key ->
+            val value = properties[key]
+            if (value != null) {
+                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                    Text(key, color = extra.textMuted,
+                        style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(200.dp))
+                    Text(value, color = extra.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerNetworkTab(serverDir: java.nio.file.Path?, i18n: com.singularity.launcher.config.I18n) {
+    val extra = LocalExtraPalette.current
+    if (serverDir == null) return
+
+    val propsFile = serverDir.resolve("server.properties")
+    val properties = remember(serverDir) {
+        if (java.nio.file.Files.exists(propsFile)) {
+            java.nio.file.Files.readAllLines(propsFile)
+                .filter { it.contains("=") && !it.startsWith("#") }
+                .associate { line ->
+                    val parts = line.split("=", limit = 2)
+                    parts[0].trim() to (parts.getOrNull(1)?.trim() ?: "")
+                }
+        } else emptyMap()
+    }
+
+    val networkProps = listOf("server-port", "server-ip", "online-mode", "enable-query",
+        "query.port", "rcon.port", "enable-rcon", "motd", "max-players",
+        "network-compression-threshold", "rate-limit")
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(i18n["server_panel.network.title"] ?: "Siec",
+            style = MaterialTheme.typography.titleSmall, color = extra.textPrimary)
+        Spacer(Modifier.height(4.dp))
+        networkProps.forEach { key ->
+            val value = properties[key]
+            if (value != null) {
+                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                    Text(key, color = extra.textMuted,
+                        style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(200.dp))
+                    Text(value, color = extra.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
     }
 }

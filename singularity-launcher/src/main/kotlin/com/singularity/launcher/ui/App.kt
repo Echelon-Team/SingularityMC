@@ -255,7 +255,11 @@ fun App() {
                                 )
                             }
                             Screen.INSTANCES -> InstancesScreen(instanceManager = instanceManager)
-                            Screen.MODRINTH -> ModrinthScreen(modrinthClient = modrinthClient)
+                            Screen.MODRINTH -> ModrinthScreen(
+                                modrinthClient = modrinthClient,
+                                instanceManager = instanceManager,
+                                httpClient = httpClient
+                            )
                             Screen.SERVERS -> ServersScreen(serverManager = serverManager)
                             Screen.SKINS -> SkinsScreen(
                                 skinsDir = launcherHome.resolve("skins"),
