@@ -170,10 +170,9 @@ private fun HardwareDetectStep(state: OnboardingState) {
             Text("Skanowanie sprzętu...", color = extra.textMuted)
         } else {
             val info = state.hardwareInfo
-            Text("CPU: ${info.cpuCores} rdzeni / ${info.cpuThreads} wątków", color = extra.textPrimary)
-            Text("RAM: ${info.ramMb} MB", color = extra.textPrimary)
-            Text("GPU: ${info.gpuName ?: "nie wykryto"}", color = extra.textPrimary)
-            Text("OS: ${info.osName}", color = extra.textPrimary)
+            Text("CPU: ${info.cpuThreads} wątków", color = extra.textPrimary)
+            Text("RAM: ${info.ramMb / 1024} GB (${info.ramMb} MB)", color = extra.textPrimary)
+            Text("GPU: ${info.gpuName ?: "wykrywanie..."}", color = extra.textPrimary)
             Spacer(Modifier.height(16.dp))
 
             Text(
