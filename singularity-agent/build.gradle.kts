@@ -24,6 +24,9 @@ dependencies {
     // JSON serialization dla ModuleDescriptor parsowania (Sub 2a Task 1)
     implementation(libs.serialization.json)
 
+    // YAML parsing (TestBot scenarios — Sub 5 Task 7)
+    implementation(libs.snakeyaml)
+
     testImplementation(libs.bundles.testing)
 }
 

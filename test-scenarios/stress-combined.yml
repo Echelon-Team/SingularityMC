@@ -1,0 +1,35 @@
+scenario: stress-combined
+timeout: 600s
+
+actions:
+  - wait: 10s
+  - teleport: [0, 64, 0]
+  - summon:
+      entity: zombie
+      count: 500
+      at: [0, 64, 0]
+  - summon:
+      entity: zombie
+      count: 500
+      at: [256, 64, 0]
+  - wait: 30s
+  - place_blocks:
+      block: tnt
+      area: [5, 5]
+      at: [128, 64, 0]
+  - wait: 10s
+  - teleport_dimension: nether
+  - wait: 15s
+  - teleport_dimension: overworld
+  - wait: 30s
+  - place_blocks:
+      block: redstone_wire
+      area: [50, 50]
+      at: [0, 64, 0]
+  - wait: 60s
+
+assertions:
+  - tps_above: 10
+  - no_crash: true
+  - no_deadlock: true
+  - heap_below: 8GB

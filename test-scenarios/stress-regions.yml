@@ -1,0 +1,19 @@
+scenario: stress-regions
+timeout: 300s
+
+actions:
+  - wait: 10s
+  - place_blocks:
+      block: iron_block
+      area: [128, 128]
+      at: [0, 64, 0]
+  - wait: 20s
+  - destroy_blocks:
+      area: [128, 128]
+      at: [0, 64, 0]
+  - wait: 20s
+
+assertions:
+  - tps_above: 10
+  - no_crash: true
+  - no_deadlock: true

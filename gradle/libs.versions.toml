@@ -15,6 +15,7 @@ mapping-io = "0.7.1"
 jetbrains-annotations = "26.1.0"
 guava = "33.5.0-jre"
 commons-compress = "1.27.1"
+snakeyaml = "2.3"
 
 [libraries]
 # Kotlin Coroutines
@@ -51,6 +52,9 @@ apache-commons-compress = { module = "org.apache.commons:commons-compress", vers
 
 # JetBrains annotations — wymagane przez mapping-io 0.7.1 (@Nullable w sygnaturach)
 jetbrains-annotations = { module = "org.jetbrains:annotations", version.ref = "jetbrains-annotations" }
+
+# YAML parsing (TestBot scenarios)
+snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
 
 # Logging
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }

@@ -1,0 +1,33 @@
+scenario: stress-basic
+timeout: 300s
+
+actions:
+  - wait: 10s
+  - teleport: [0, 64, 0]
+  - look_around:
+      degrees: 360
+      duration: 5s
+  - run_direction:
+      direction: north
+      duration: 30s
+  - place_blocks:
+      block: stone
+      area: [10, 10]
+      at: [0, 64, 0]
+  - destroy_blocks:
+      area: [10, 10]
+      at: [0, 64, 0]
+  - summon:
+      entity: zombie
+      count: 200
+      at: [0, 64, 0]
+  - wait: 30s
+  - teleport_dimension: nether
+  - wait: 15s
+  - teleport_dimension: overworld
+
+assertions:
+  - tps_above: 15
+  - no_crash: true
+  - no_deadlock: true
+  - heap_below: 6GB

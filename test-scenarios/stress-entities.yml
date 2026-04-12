@@ -1,0 +1,28 @@
+scenario: stress-entities
+timeout: 180s
+
+actions:
+  - wait: 5s
+  - teleport: [0, 64, 0]
+  - summon:
+      entity: zombie
+      count: 500
+      at: [0, 64, 0]
+  - wait: 10s
+  - summon:
+      entity: skeleton
+      count: 500
+      at: [64, 64, 0]
+  - wait: 10s
+  - summon:
+      entity: creeper
+      count: 300
+      at: [-64, 64, 0]
+  - wait: 60s
+
+assertions:
+  - tps_above: 10
+  - no_crash: true
+  - no_deadlock: true
+  - entity_count_above: 1000
+  - heap_below: 8GB

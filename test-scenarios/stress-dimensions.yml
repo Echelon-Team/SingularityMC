@@ -1,0 +1,21 @@
+scenario: stress-dimensions
+timeout: 180s
+
+actions:
+  - wait: 5s
+  - teleport_dimension: nether
+  - wait: 5s
+  - teleport_dimension: overworld
+  - wait: 5s
+  - teleport_dimension: the_end
+  - wait: 5s
+  - teleport_dimension: overworld
+  - wait: 5s
+  - teleport_dimension: nether
+  - wait: 5s
+  - teleport_dimension: the_end
+
+assertions:
+  - tps_above: 12
+  - no_crash: true
+  - no_deadlock: true

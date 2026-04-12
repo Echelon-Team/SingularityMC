@@ -1,0 +1,18 @@
+scenario: stress-redstone
+timeout: 300s
+
+actions:
+  - wait: 10s
+  - place_blocks:
+      block: redstone_wire
+      area: [100, 100]
+      at: [0, 64, 0]
+  - place_blocks:
+      block: redstone_torch
+      area: [10, 10]
+      at: [0, 65, 0]
+  - wait: 60s
+
+assertions:
+  - tps_above: 10
+  - no_crash: true
