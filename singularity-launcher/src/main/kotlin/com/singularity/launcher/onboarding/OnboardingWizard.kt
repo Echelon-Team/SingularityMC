@@ -69,7 +69,14 @@ fun OnboardingWizard(
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.weight(1f))
-                Button(onClick = { viewModel.next() }) {
+                val nextEnabled = when (state.currentStep) {
+                    OnboardingStep.LOGIN -> state.loginComplete
+                    else -> true
+                }
+                Button(
+                    onClick = { viewModel.next() },
+                    enabled = nextEnabled
+                ) {
                     Text(if (state.currentStep == OnboardingStep.FIRST_INSTANCE) "Zakończ" else "Dalej")
                 }
             }
@@ -134,12 +141,17 @@ private fun LoginStep(viewModel: OnboardingViewModel) {
             singleLine = true
         )
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = { if (nonPremiumNick.isNotBlank()) viewModel.setLoginComplete() },
+        Button(
+            onClick = {
+                if (nonPremiumNick.isNotBlank()) {
+                    viewModel.setLoginComplete()
+                    viewModel.next()
+                }
+            },
             enabled = nonPremiumNick.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Graj non-premium jako $nonPremiumNick")
+            Text("Kontynuuj jako $nonPremiumNick")
         }
     }
 }
