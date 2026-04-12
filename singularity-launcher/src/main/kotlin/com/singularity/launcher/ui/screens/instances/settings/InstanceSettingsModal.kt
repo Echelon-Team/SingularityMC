@@ -134,6 +134,7 @@ fun InstanceSettingsModal(
 @Composable
 private fun GeneralTab(settings: InstanceRuntimeSettings) {
     val extra = LocalExtraPalette.current
+    val i18n = com.singularity.launcher.config.LocalI18n.current
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
             text = "General Settings",
@@ -142,7 +143,7 @@ private fun GeneralTab(settings: InstanceRuntimeSettings) {
             color = extra.textPrimary
         )
         Text(
-            text = "General instance settings — name + version (read-only w Sub 4, edit w Sub 5 via InstanceManager.update)",
+            text = i18n["instance_settings.general.description"],
             color = extra.textMuted,
             style = MaterialTheme.typography.bodyMedium
         )

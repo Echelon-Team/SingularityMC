@@ -375,20 +375,21 @@ object AgentMain {
             val ipcServer = com.singularity.agent.ipc.IpcServer(instanceDir)
             ipcServer.start()
 
+            var metricsCollector: com.singularity.agent.ipc.MetricsCollector? = null
             if (threadingEngine != null) {
-                val metricsCollector = com.singularity.agent.ipc.MetricsCollector(ipcServer, threadingEngine)
+                metricsCollector = com.singularity.agent.ipc.MetricsCollector(ipcServer, threadingEngine)
                 metricsCollector.start()
-
-                // Shutdown hook for graceful cleanup
-                Runtime.getRuntime().addShutdownHook(Thread {
-                    logger.info("Agent shutdown hook triggered")
-                    metricsCollector.stop()
-                    ipcServer.stop()
-                    loadingRenderer.stop()
-                    threadingEngine.shutdown()
-                    com.singularity.agent.logging.AgentDiagnosticLogger.teardown()
-                })
             }
+
+            // Shutdown hook — unconditional, cleans up IPC port file even if ThreadingEngine failed
+            Runtime.getRuntime().addShutdownHook(Thread {
+                logger.info("Agent shutdown hook triggered")
+                metricsCollector?.stop()
+                ipcServer.stop()
+                loadingRenderer.stop()
+                threadingEngine?.shutdown()
+                com.singularity.agent.logging.AgentDiagnosticLogger.teardown()
+            })
 
             // Loading complete
             loadingState.setProgress(100)

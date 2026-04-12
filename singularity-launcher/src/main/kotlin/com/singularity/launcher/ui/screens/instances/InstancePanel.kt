@@ -159,20 +159,34 @@ fun InstancePanel(
                             color = extra.textMuted
                         )
                         Spacer(Modifier.height(8.dp))
-                        // DiskUsageBar (mock values — real scanner in Sub 5)
-                        val usage = remember(instance.rootDir) {
-                            DiskUsageBarMath.calculateSegmentWidths(
-                                totalGB = 50f,
-                                worldsGB = 2f,
-                                modsGB = 1f,
-                                backupsGB = 0.5f,
-                                configGB = 0.1f
+                        // DiskUsageBar — real scan of instance directory
+                        val diskInfo = remember(instance.rootDir) {
+                            fun dirSizeGB(base: java.nio.file.Path, subpath: String): Float {
+                                val dir = base.resolve(subpath)
+                                if (!Files.exists(dir)) return 0f
+                                return try {
+                                    var total = 0L
+                                    Files.walk(dir).use { s -> s.filter { Files.isRegularFile(it) }.forEach { total += Files.size(it) } }
+                                    total / (1024f * 1024f * 1024f)
+                                } catch (_: Exception) { 0f }
+                            }
+                            val root = instance.rootDir
+                            val worldsGB = dirSizeGB(root, "minecraft/saves") + dirSizeGB(root, "minecraft/world")
+                            val modsGB = dirSizeGB(root, "minecraft/mods") + dirSizeGB(root, "mods")
+                            val backupsGB = dirSizeGB(root, "backups")
+                            val configGB = dirSizeGB(root, "minecraft/config")
+                            val totalUsed = worldsGB + modsGB + backupsGB + configGB
+                            val totalGB = (totalUsed * 1.2f).coerceAtLeast(1f)
+                            Triple(
+                                DiskUsageBarMath.calculateSegmentWidths(totalGB, worldsGB, modsGB, backupsGB, configGB),
+                                "%.1f GB".format(totalGB),
+                                "%.1f GB ${i18n["instance_panel.disk.used"]}".format(totalUsed)
                             )
                         }
                         DiskUsageBar(
-                            widths = usage,
-                            totalLabel = "50 GB",
-                            usedLabel = "3.6 GB ${i18n["instance_panel.disk.used"]}"
+                            widths = diskInfo.first,
+                            totalLabel = diskInfo.second,
+                            usedLabel = diskInfo.third
                         )
                     }
 

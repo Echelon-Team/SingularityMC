@@ -62,6 +62,10 @@ class DiscordRpcManager(
 
     fun initialize() {
         if (!config.enabled) return
+        if (clientId.startsWith("SINGULARITYMC_") || clientId.isBlank()) {
+            logger.info("Discord RPC skipped — no real client ID configured (placeholder: {})", clientId)
+            return
+        }
         logger.info("Initializing Discord RPC (client_id: {})", clientId)
 
         try {

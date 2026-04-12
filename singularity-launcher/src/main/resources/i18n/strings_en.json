@@ -196,6 +196,9 @@
   "settings.appearance.theme.end": "End Dimension (Dark)",
   "settings.appearance.theme.aether": "Aether (Light)",
   "settings.appearance.language": "Language",
+  "settings.performance.description": "Performance settings are configured per instance in instance settings.",
+  "server_panel.tab.coming_soon": "This tab will be available in a future update.",
+  "instance_settings.general.description": "Instance name and Minecraft version.",
 
   "account.title": "Account management",
   "account.banner.microsoft_disabled": "⚠ Microsoft account login has not been implemented yet — it will be available in a future update",

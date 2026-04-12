@@ -229,6 +229,7 @@ fun ServerPanel(
 @Composable
 private fun PlaceholderTabContent(tabName: String) {
     val extra = LocalExtraPalette.current
+    val i18n = LocalI18n.current
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -242,7 +243,7 @@ private fun PlaceholderTabContent(tabName: String) {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Sub 5 — real content (file watcher + properties parser)",
+            text = i18n["server_panel.tab.coming_soon"],
             style = MaterialTheme.typography.bodySmall,
             color = extra.textMuted
         )

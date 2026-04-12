@@ -219,7 +219,7 @@ private fun PerformanceSection(settings: LauncherSettings) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         SectionHeader(i18n["settings.performance"])
         Text(
-            text = "Performance settings will expand in Sub 5 ResourceManager (dynamic instance allocation, overbook warnings, preferred configs).",
+            text = i18n["settings.performance.description"],
             color = extra.textMuted
         )
     }

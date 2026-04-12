@@ -32,6 +32,7 @@ import com.singularity.launcher.service.auth.AuthManager
 import com.singularity.launcher.service.auth.AuthManagerImpl
 import com.singularity.launcher.service.ipc.IpcClient
 import com.singularity.launcher.service.ipc.IpcClientReal
+import org.slf4j.LoggerFactory
 import com.singularity.launcher.integration.AutoUpdater
 import com.singularity.launcher.integration.DiscordRpcManager
 import com.singularity.launcher.onboarding.HardwareDetector
@@ -89,6 +90,8 @@ import java.nio.file.Path
  *
  * **Lifecycle:** HttpClient + appScope + navigator cleaned up w DisposableEffect.
  */
+private val logger = LoggerFactory.getLogger("com.singularity.launcher.ui.App")
+
 @Composable
 fun App() {
     val home = System.getProperty("user.home")
@@ -198,7 +201,13 @@ fun App() {
             val onboardingVm = remember { OnboardingViewModel(hardwareDetector) }
             OnboardingWizard(
                 viewModel = onboardingVm,
-                onComplete = { showOnboarding = false }
+                onComplete = {
+                    // Persist — save a default offline account so onboarding doesn't re-show
+                    val updated = launcherSettings.copy(lastActiveAccountId = "offline-default")
+                    settingsStore.save(updated)
+                    launcherSettings = updated
+                    showOnboarding = false
+                }
             )
         }
         return
@@ -233,7 +242,9 @@ fun App() {
                                             val instance = instanceManager.getById(instanceId)
                                             if (instance != null) {
                                                 launchFlowCoordinator.launch(instance, instance.config)
-                                                    .collect { /* Sub 5: wire progress to panel */ }
+                                                    .collect { event ->
+                                                logger.info("Launch progress: {}", event)
+                                            }
                                             }
                                         }
                                         navigator.openInstancePanel(instanceId)
@@ -270,7 +281,9 @@ fun App() {
                                                 val instance = instanceManager.getById(launchId)
                                                 if (instance != null) {
                                                     launchFlowCoordinator.launch(instance, instance.config)
-                                                        .collect { /* Sub 5: progress */ }
+                                                        .collect { event ->
+                                                logger.info("Launch progress: {}", event)
+                                            }
                                                 }
                                             }
                                         }

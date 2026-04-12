@@ -1,5 +1,8 @@
 package com.singularity.launcher.ui.screens.diagnostics
 
+import com.singularity.launcher.crash.CrashAnalyzer
+import com.singularity.launcher.crash.CrashPatternMatcher
+import com.singularity.launcher.crash.CrashReportBuilder
 import com.singularity.launcher.service.InstanceManager
 import com.singularity.launcher.viewmodel.BaseViewModel
 import kotlinx.coroutines.CoroutineDispatcher
@@ -10,6 +13,7 @@ import kotlinx.coroutines.swing.Swing
 data class CrashAnalyzerState(
     val reports: List<CrashLogParser.CrashReport> = emptyList(),
     val selectedReport: CrashLogParser.CrashReport? = null,
+    val analysis: CrashAnalyzer.AnalysisResult? = null,
     val isLoading: Boolean = false,
     val error: String? = null
 )
@@ -18,13 +22,19 @@ data class CrashAnalyzerState(
  * ViewModel dla CrashAnalyzerTab — scanuje crash-reports/ folder all instancji, parse'uje,
  * trzyma state ze sortowanymi reports (most recent first).
  *
- * **#32 edge-case fix:** `reports` jest w state (NIE lokalna var) — zapewnia że recompose
- * widzi latest list po refresh.
+ * Sub 5: When a report is selected, CrashAnalyzer (crash/ package) provides full analysis:
+ * category, human-readable description, suggested actions, Markdown report.
  */
 class CrashAnalyzerViewModel(
     private val instanceManager: InstanceManager,
     dispatcher: CoroutineDispatcher = Dispatchers.Swing
 ) : BaseViewModel<CrashAnalyzerState>(CrashAnalyzerState(), dispatcher) {
+
+    private val patternMatcher = CrashPatternMatcher()
+    private val reportBuilder = CrashReportBuilder(
+        launcherVersion = "1.0.0",
+        agentVersion = "1.0.0"
+    )
 
     init {
         refresh()
@@ -49,6 +59,39 @@ class CrashAnalyzerViewModel(
     }
 
     fun setSelectedReport(report: CrashLogParser.CrashReport?) {
-        updateState { it.copy(selectedReport = report) }
+        updateState { it.copy(selectedReport = report, analysis = null) }
+        if (report != null) {
+            analyzeReport(report)
+        }
+    }
+
+    private fun analyzeReport(report: CrashLogParser.CrashReport) {
+        viewModelScope.launch {
+            try {
+                val parsed = com.singularity.launcher.crash.CrashLogParser.parse(report.rawContent)
+                val category = patternMatcher.categorize(parsed)
+                val description = patternMatcher.describe(parsed, category)
+                val actions = patternMatcher.suggestActions(category)
+                val fullReport = reportBuilder.build(
+                    parsed = parsed,
+                    category = category,
+                    description = description,
+                    suggestedActions = actions,
+                    vanillaCrashLog = report.rawContent,
+                    agentLogs = emptyList() // agent logs loaded per-instance when CrashAnalyzer is used directly
+                )
+                updateState {
+                    it.copy(analysis = CrashAnalyzer.AnalysisResult(
+                        parsed = parsed,
+                        category = category,
+                        humanReadableDescription = description,
+                        suggestedActions = actions,
+                        fullReport = fullReport
+                    ))
+                }
+            } catch (e: Exception) {
+                updateState { it.copy(error = "Analysis failed: ${e.message}") }
+            }
+        }
     }
 }

@@ -197,6 +197,9 @@
   "settings.appearance.theme.end": "End Dimension (Dark)",
   "settings.appearance.theme.aether": "Aether (Light)",
   "settings.appearance.language": "Język",
+  "settings.performance.description": "Ustawienia wydajności są konfigurowane per instancja w ustawieniach instancji.",
+  "server_panel.tab.coming_soon": "Ta zakładka będzie dostępna w przyszłej aktualizacji.",
+  "instance_settings.general.description": "Nazwa i wersja Minecraft instancji.",
 
   "account.title": "Zarządzanie kontami",
   "account.banner.microsoft_disabled": "⚠ Logowanie kontem Microsoft nie zostało jeszcze wprowadzone — będzie dostępne w przyszłej aktualizacji",
