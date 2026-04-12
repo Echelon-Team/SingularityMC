@@ -27,6 +27,8 @@ class LoadingScreenProgress {
     }
 
     fun reset() {
-        _status.value = LoadingStatus(0, "", false)
+        _status.value = LoadingStatus(0, "", isLoading = false)
     }
+
+    val isActive: Boolean get() = _status.value.isLoading
 }

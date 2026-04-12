@@ -1,35 +1,35 @@
 {
   "tips": [
     {
-      "pl": "Czy wiesz? SingularityMC moze jednoczesnie ladowac mody Fabric, Forge i NeoForge.",
+      "pl": "Czy wiesz? SingularityMC może jednocześnie ładować mody Fabric, Forge i NeoForge.",
       "en": "Did you know? SingularityMC can load Fabric, Forge and NeoForge mods simultaneously."
     },
     {
-      "pl": "Region-based multithreading oznacza ze lag w jednym regionie nie wplywa na inne.",
+      "pl": "Region-based multithreading oznacza że lag w jednym regionie nie wpływa na inne.",
       "en": "Region-based multithreading means lag in one region doesn't affect others."
     },
     {
-      "pl": "Kazdy wymiar (Overworld, Nether, End) dziala na osobnej puli watkow.",
+      "pl": "Każdy wymiar (Overworld, Nether, End) działa na osobnej puli wątków.",
       "en": "Each dimension (Overworld, Nether, End) runs on a separate thread pool."
     },
     {
-      "pl": "F3+G przelacza wizualizacje granic regionow w grze.",
+      "pl": "F3+G przełącza wizualizację granic regionów w grze.",
       "en": "F3+G toggles region boundary visualization in-game."
     },
     {
-      "pl": "Pre-gen terenu moze wygenerowac 15 000 blokow promienia w tle gdy grasz.",
+      "pl": "Pre-gen terenu może wygenerować 15 000 bloków promienia w tle gdy grasz.",
       "en": "Terrain pre-gen can generate 15,000 blocks radius in the background while you play."
     },
     {
-      "pl": "Sodium i Lithium sa w pelni kompatybilne z SingularityMC — nawet zalecane.",
+      "pl": "Sodium i Lithium są w pełni kompatybilne z SingularityMC — nawet zalecane.",
       "en": "Sodium and Lithium are fully compatible with SingularityMC — even recommended."
     },
     {
-      "pl": "Launcher wykrywa C2ME i blokuje uruchomienie — nasz system juz zawiera wielowatkowy chunk loading.",
+      "pl": "Launcher wykrywa C2ME i blokuje uruchomienie — nasz system już zawiera wielowątkowy chunk loading.",
       "en": "Launcher detects C2ME and blocks startup — our system already includes multithreaded chunk loading."
     },
     {
-      "pl": "Dzieki bytecode transformation nie modyfikujemy zadnych plikow Minecrafta na dysku.",
+      "pl": "Dzięki bytecode transformation nie modyfikujemy żadnych plików Minecrafta na dysku.",
       "en": "Thanks to bytecode transformation we don't modify any Minecraft files on disk."
     }
   ]

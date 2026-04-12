@@ -45,6 +45,14 @@ class LoadingScreenRenderer(
             false
         }
 
+        // macOS requires GLFW calls on main thread — our render thread would segfault.
+        // Detect and fall back to console on macOS.
+        val isMacOs = System.getProperty("os.name").lowercase().contains("mac")
+        if (isMacOs && lwjglAvailable) {
+            logger.info("macOS detected — GLFW requires main thread, using console fallback")
+            lwjglAvailable = false
+        }
+
         renderThread = Thread {
             if (lwjglAvailable) {
                 runOpenGLLoop()

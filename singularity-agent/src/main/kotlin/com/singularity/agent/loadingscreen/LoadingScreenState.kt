@@ -68,8 +68,8 @@ class LoadingScreenState {
     fun getCurrentTip(): String? = currentTip.get()
 
     fun markFinished() {
-        finished = true
         setProgress(100)
         setCurrentStage("Gotowe")
+        finished = true // last — renderer checks finished after reading progress
     }
 }
