@@ -95,6 +95,28 @@ class ThreadingEngine(
     fun getCrossDimensionTransfers(): CrossDimensionTransferQueue = crossDimensionTransfers
     fun isInitialized(): Boolean = initialized
 
+    /** Łączna ilość aktywnych regionów we wszystkich wymiarach. */
+    fun getTotalActiveRegions(): Int =
+        grids.values.sumOf { it.getActiveRegions().size }
+
+    /** Łączna ilość encji we wszystkich wymiarach. */
+    fun getTotalEntityCount(): Int =
+        grids.values.sumOf { it.totalEntityCount() }
+
+    /** Ilość załadowanych chunków (cumulative). */
+    fun getLoadedChunkCount(): Int =
+        chunkLoadingPool?.getLoadedCount() ?: 0
+
+    /** Ilość chunków oczekujących na generację. */
+    fun getPendingChunkCount(): Int =
+        chunkPipeline?.getPendingCount() ?: 0
+
+    /** Ilość wymiarów. */
+    fun getDimensionCount(): Int = grids.size
+
+    /** Ilość wątków per wymiar (snapshot). */
+    fun getPoolManager(): DimensionPoolManager = poolManager
+
     fun shutdown() {
         logger.info("Shutting down ThreadingEngine")
         poolManager.shutdownAll()

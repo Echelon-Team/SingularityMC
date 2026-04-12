@@ -143,7 +143,7 @@ object ModLoadingOrchestrator {
                 fabricResult.copy(loaderType = LoaderType.MULTI)
             }
 
-            LoaderType.LIBRARY, LoaderType.UNKNOWN -> null // nie parsujemy
+            LoaderType.NONE, LoaderType.LIBRARY, LoaderType.UNKNOWN -> null // nie parsujemy
         }
     }
 }
