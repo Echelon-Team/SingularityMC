@@ -51,7 +51,7 @@ compose.desktop {
             copyright = "2026 Echelon Team"
             vendor = "Echelon Team"
 
-            modules("java.sql", "jdk.unsupported", "java.net.http")
+            modules("java.sql", "jdk.unsupported", "java.net.http", "java.management")
 
             windows {
                 menuGroup = "SingularityMC"
