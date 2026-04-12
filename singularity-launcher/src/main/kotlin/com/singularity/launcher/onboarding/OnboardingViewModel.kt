@@ -27,6 +27,7 @@ class OnboardingViewModel(
 
     fun next() {
         val current = state.value.currentStep
+        if (current == OnboardingStep.COMPLETE) return
         val nextStep = OnboardingStep.entries.getOrNull(current.ordinal + 1) ?: OnboardingStep.COMPLETE
         updateState { it.copy(currentStep = nextStep) }
 

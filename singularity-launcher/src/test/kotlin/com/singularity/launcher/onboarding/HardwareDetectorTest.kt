@@ -18,11 +18,11 @@ class HardwareDetectorTest {
     }
 
     @Test
-    fun `cpuThreads is at least cpuCores`() = runBlocking {
+    fun `cpuCores equals cpuThreads (logical processors)`() = runBlocking {
         val detector = HardwareDetector()
         val info = detector.detect()
-        assertTrue(info.cpuThreads >= info.cpuCores,
-            "cpuThreads (${info.cpuThreads}) should be >= cpuCores (${info.cpuCores})")
+        assertEquals(info.cpuThreads, info.cpuCores,
+            "cpuCores should equal cpuThreads (both are logical processor count)")
     }
 
     @Test

@@ -28,7 +28,10 @@ class HardwareDetector {
 
     suspend fun detect(): HardwareInfo = withContext(Dispatchers.IO) {
         val cpuThreads = Runtime.getRuntime().availableProcessors()
-        val cpuCores = (cpuThreads / 2).coerceAtLeast(1)
+        // availableProcessors() returns logical processors — on non-HT CPUs this equals
+        // physical cores, on HT/SMT it's 2x. We can't reliably distinguish without
+        // platform-specific tools, so we report logical count for both fields.
+        val cpuCores = cpuThreads
 
         val totalRamBytes = try {
             (ManagementFactory.getOperatingSystemMXBean() as? com.sun.management.OperatingSystemMXBean)?.totalMemorySize

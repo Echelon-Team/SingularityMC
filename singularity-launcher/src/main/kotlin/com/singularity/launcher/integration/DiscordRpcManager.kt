@@ -55,9 +55,10 @@ class DiscordRpcManager(
     @Volatile private var currentState = PresenceState()
     @Volatile private var connected = false
 
-    // Platform-specific pipe handle
+    // Platform-specific pipe handle — guarded by pipeLock
     private var windowsPipe: RandomAccessFile? = null
     private var unixChannel: SocketChannel? = null
+    private val pipeLock = Any()
 
     fun initialize() {
         if (!config.enabled) return
@@ -196,11 +197,13 @@ class DiscordRpcManager(
             put("nonce", System.nanoTime().toString())
         }
 
-        try {
-            writeFrame(1, payload.toString()) // opcode 1 = FRAME
-        } catch (e: Exception) {
-            logger.debug("Failed to update presence: {}", e.message)
-            connected = false
+        synchronized(pipeLock) {
+            try {
+                writeFrame(1, payload.toString()) // opcode 1 = FRAME
+            } catch (e: Exception) {
+                logger.debug("Failed to update presence: {}", e.message)
+                connected = false
+            }
         }
     }
 
@@ -263,7 +266,8 @@ class DiscordRpcManager(
     }
 
     fun shutdown() {
-        if (connected) {
+        synchronized(pipeLock) {
+            if (!connected) return
             logger.info("Shutting down Discord RPC")
             try {
                 writeFrame(2, buildJsonObject { put("v", 1) }.toString()) // opcode 2 = CLOSE
