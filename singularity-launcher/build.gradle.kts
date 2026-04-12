@@ -40,16 +40,42 @@ compose.desktop {
         nativeDistributions {
             targetFormats(
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Exe,
-                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Msi
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Msi,
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.AppImage,
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb,
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Rpm
             )
             packageName = "SingularityMC"
             packageVersion = "1.0.0"
+            description = "Multithreaded Minecraft launcher with cross-loader mod support"
+            copyright = "2026 Echelon Team"
+            vendor = "Echelon Team"
+
+            modules("java.sql", "jdk.unsupported", "java.net.http")
+
             windows {
                 menuGroup = "SingularityMC"
                 shortcut = true
                 dirChooser = true
+                perUserInstall = true
+                upgradeUuid = "18159995-d967-4cd2-8885-77bfa97cfa9f"
                 // iconFile.set(project.file("src/main/resources/icon.ico"))
-                // ^ Icon dodawany w Subsystemie 5 (GUI)
+            }
+
+            linux {
+                shortcut = true
+                packageName = "singularitymc"
+                debMaintainer = "team@singularitymc.example"
+                menuGroup = "Games"
+                appCategory = "Game"
+                // iconFile.set(project.file("src/main/resources/icon.png"))
+            }
+
+            macOS {
+                bundleID = "com.singularitymc.launcher"
+                packageName = "SingularityMC"
+                dockName = "SingularityMC"
+                // iconFile.set(project.file("src/main/resources/icon.icns"))
             }
         }
     }
