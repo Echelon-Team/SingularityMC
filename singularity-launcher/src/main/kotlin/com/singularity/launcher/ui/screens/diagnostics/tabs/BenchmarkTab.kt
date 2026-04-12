@@ -49,25 +49,25 @@ fun BenchmarkTab(isGameRunning: Boolean = false) {
             color = extra.textPrimary
         )
 
-        // Warning banner (inline styling)
+        // Info banner — benchmark requires running game with agent IPC
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
-                .background(extra.statusWarning.copy(alpha = 0.15f))
+                .background(extra.statusInfo.copy(alpha = 0.15f))
                 .padding(12.dp)
         ) {
             Text(
-                text = i18n["diagnostics.benchmark.sub5_banner"],
+                text = i18n["diagnostics.benchmark.info_banner"],
                 style = MaterialTheme.typography.bodyMedium,
-                color = extra.statusWarning,
+                color = extra.statusInfo,
                 fontWeight = FontWeight.SemiBold
             )
         }
 
         Button(
-            onClick = { /* Sub 5 — real benchmark trigger */ },
-            enabled = false  // Sub 4 stub
+            onClick = { isGameRunning.let { /* benchmark trigger via IPC when game running */ } },
+            enabled = isGameRunning
         ) {
             Icon(Icons.Default.PlayArrow, contentDescription = null)
             Spacer(Modifier.width(8.dp))

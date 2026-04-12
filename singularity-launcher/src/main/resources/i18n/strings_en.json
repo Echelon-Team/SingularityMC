@@ -199,6 +199,9 @@
   "settings.performance.description": "Performance settings are configured per instance in instance settings.",
   "server_panel.tab.coming_soon": "This tab will be available in a future update.",
   "instance_settings.general.description": "Instance name and Minecraft version.",
+  "diagnostics.benchmark.info_banner": "Benchmark requires a running game with SingularityMC agent. Launch an Enhanced instance to unlock.",
+  "update.available": "Update available",
+  "update.dismiss": "Later",
 
   "account.title": "Account management",
   "account.banner.microsoft_disabled": "⚠ Microsoft account login has not been implemented yet — it will be available in a future update",

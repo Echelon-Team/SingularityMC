@@ -3,8 +3,11 @@ package com.singularity.launcher.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -313,6 +316,25 @@ fun App() {
                         authManager = authManager,
                         onDismiss = { navigator.toggleAccountOverlay() }
                     )
+                }
+
+                // Update notification — simple Snackbar-style at bottom
+                if (updateAvailable != null) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.BottomCenter
+                    ) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Text(
+                                text = "${LocalI18n.current["update.available"]}: ${updateAvailable!!.version}",
+                                modifier = Modifier.padding(12.dp),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
                 }
             }
         }

@@ -200,6 +200,9 @@
   "settings.performance.description": "Ustawienia wydajności są konfigurowane per instancja w ustawieniach instancji.",
   "server_panel.tab.coming_soon": "Ta zakładka będzie dostępna w przyszłej aktualizacji.",
   "instance_settings.general.description": "Nazwa i wersja Minecraft instancji.",
+  "diagnostics.benchmark.info_banner": "Benchmark wymaga uruchomionej gry z agentem SingularityMC. Uruchom instancję Enhanced aby odblokować.",
+  "update.available": "Dostępna aktualizacja",
+  "update.dismiss": "Później",
 
   "account.title": "Zarządzanie kontami",
   "account.banner.microsoft_disabled": "⚠ Logowanie kontem Microsoft nie zostało jeszcze wprowadzone — będzie dostępne w przyszłej aktualizacji",
