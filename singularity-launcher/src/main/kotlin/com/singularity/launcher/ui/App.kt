@@ -205,14 +205,31 @@ fun App() {
             OnboardingWizard(
                 viewModel = onboardingVm,
                 onComplete = {
-                    val telemetryChoice = onboardingVm.state.value.telemetryAccepted ?: false
-                    val updated = launcherSettings.copy(
-                        lastActiveAccountId = "offline-default",
-                        telemetryEnabled = telemetryChoice
-                    )
-                    settingsStore.save(updated)
-                    launcherSettings = updated
-                    showOnboarding = false
+                    val onboardingState = onboardingVm.state.value
+                    val telemetryChoice = onboardingState.telemetryAccepted ?: false
+
+                    // Create offline account from onboarding nick
+                    scope.launch {
+                        try {
+                            val nick = onboardingState.loginNick.ifBlank { "Player" }
+                            val account = authManager.createNonPremiumAccount(nick)
+                            val updated = launcherSettings.copy(
+                                lastActiveAccountId = account.id,
+                                telemetryEnabled = telemetryChoice
+                            )
+                            settingsStore.save(updated)
+                            launcherSettings = updated
+                        } catch (e: Exception) {
+                            // Fallback — save without account
+                            val updated = launcherSettings.copy(
+                                lastActiveAccountId = "offline-default",
+                                telemetryEnabled = telemetryChoice
+                            )
+                            settingsStore.save(updated)
+                            launcherSettings = updated
+                        }
+                        showOnboarding = false
+                    }
                 }
             )
         }

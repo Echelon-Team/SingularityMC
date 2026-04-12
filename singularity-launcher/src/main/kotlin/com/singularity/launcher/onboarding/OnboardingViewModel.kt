@@ -18,7 +18,8 @@ data class OnboardingState(
     val hardwareInfo: HardwareDetector.HardwareInfo? = null,
     val recommendedPreset: String? = null,
     val telemetryAccepted: Boolean? = null,
-    val loginComplete: Boolean = false
+    val loginComplete: Boolean = false,
+    val loginNick: String = ""
 )
 
 class OnboardingViewModel(
@@ -46,8 +47,8 @@ class OnboardingViewModel(
         updateState { it.copy(currentStep = OnboardingStep.FIRST_INSTANCE) }
     }
 
-    fun setLoginComplete() {
-        updateState { it.copy(loginComplete = true) }
+    fun setLoginComplete(nick: String) {
+        updateState { it.copy(loginComplete = true, loginNick = nick) }
     }
 
     fun setTelemetryAccepted(accepted: Boolean) {

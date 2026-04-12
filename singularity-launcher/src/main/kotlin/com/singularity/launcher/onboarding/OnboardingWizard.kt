@@ -145,7 +145,7 @@ private fun LoginStep(viewModel: OnboardingViewModel) {
         Button(
             onClick = {
                 if (nonPremiumNick.isNotBlank()) {
-                    viewModel.setLoginComplete()
+                    viewModel.setLoginComplete(nonPremiumNick.trim())
                     viewModel.next()
                 }
             },

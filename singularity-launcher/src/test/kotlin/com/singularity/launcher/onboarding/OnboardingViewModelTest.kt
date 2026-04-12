@@ -68,7 +68,7 @@ class OnboardingViewModelTest {
     fun `setLoginComplete updates state`() {
         val vm = createViewModel()
         assertFalse(vm.state.value.loginComplete)
-        vm.setLoginComplete()
+        vm.setLoginComplete("TestPlayer")
         assertTrue(vm.state.value.loginComplete)
     }
 
