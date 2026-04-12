@@ -61,11 +61,20 @@ class HardwareDetector {
             val process = ProcessBuilder(*command)
                 .redirectErrorStream(true)
                 .start()
-            val output = process.inputStream.bufferedReader().readText()
+            // Read output async — readText() blocks until EOF, must not block the timeout
+            val outputFuture = java.util.concurrent.CompletableFuture.supplyAsync {
+                process.inputStream.bufferedReader().readText()
+            }
             val exited = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
             if (!exited) {
                 process.destroyForcibly()
                 logger.warn("GPU detection timed out after 5s")
+                return null
+            }
+            val output = try {
+                outputFuture.get(2, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (_: Exception) {
+                process.destroyForcibly()
                 return null
             }
             if (process.exitValue() != 0) return null
