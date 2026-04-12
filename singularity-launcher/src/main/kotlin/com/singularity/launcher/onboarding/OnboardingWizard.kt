@@ -108,10 +108,30 @@ private fun WelcomeStep() {
     }
 }
 
+private val NICK_REGEX = Regex("^[a-zA-Z0-9_]+$")
+
+private fun validateNick(nick: String): String? {
+    val trimmed = nick.trim()
+    return when {
+        trimmed.isEmpty() -> null // no error, just empty
+        trimmed.length < 3 -> "Nick musi mieć min. 3 znaki"
+        trimmed.length > 16 -> "Nick może mieć max. 16 znaków"
+        !NICK_REGEX.matches(trimmed) -> "Nick może zawierać tylko litery A-Z, cyfry 0-9 i _"
+        else -> null // valid
+    }
+}
+
+private fun isNickValid(nick: String): Boolean {
+    val trimmed = nick.trim()
+    return trimmed.length in 3..16 && NICK_REGEX.matches(trimmed)
+}
+
 @Composable
 private fun LoginStep(viewModel: OnboardingViewModel) {
     val extra = LocalExtraPalette.current
     var nonPremiumNick by remember { mutableStateOf("") }
+    val nickError = if (nonPremiumNick.isNotEmpty()) validateNick(nonPremiumNick) else null
+    val nickValid = isNickValid(nonPremiumNick)
 
     Column(modifier = Modifier.widthIn(max = 400.dp)) {
         Text("Wybierz typ konta:", style = MaterialTheme.typography.titleMedium)
@@ -136,23 +156,32 @@ private fun LoginStep(viewModel: OnboardingViewModel) {
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = nonPremiumNick,
-            onValueChange = { nonPremiumNick = it },
+            onValueChange = { input ->
+                // Filter out spaces on input
+                nonPremiumNick = input.filter { it != ' ' }
+            },
             label = { Text("Nick") },
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true
+            singleLine = true,
+            isError = nickError != null,
+            supportingText = if (nickError != null) {
+                { Text(nickError, color = extra.statusError) }
+            } else {
+                { Text("3-16 znaków, litery A-Z, cyfry 0-9, podkreślnik _", color = extra.textMuted) }
+            }
         )
         Spacer(Modifier.height(8.dp))
         Button(
             onClick = {
-                if (nonPremiumNick.isNotBlank()) {
+                if (nickValid) {
                     viewModel.setLoginComplete(nonPremiumNick.trim())
                     viewModel.next()
                 }
             },
-            enabled = nonPremiumNick.isNotBlank(),
+            enabled = nickValid,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Kontynuuj jako $nonPremiumNick")
+            Text(if (nickValid) "Kontynuuj jako ${nonPremiumNick.trim()}" else "Kontynuuj")
         }
     }
 }
