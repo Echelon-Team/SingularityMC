@@ -1,7 +1,9 @@
 package com.singularity.agent.testbot
 
 import org.slf4j.LoggerFactory
+import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
+import org.yaml.snakeyaml.constructor.SafeConstructor
 
 /**
  * Parser YAML scenariuszy test bota.
@@ -26,7 +28,7 @@ object TestBotParser {
     private val logger = LoggerFactory.getLogger(TestBotParser::class.java)
 
     fun parse(yamlContent: String): TestBotScenario {
-        val yaml = Yaml()
+        val yaml = Yaml(SafeConstructor(LoaderOptions()))
         @Suppress("UNCHECKED_CAST")
         val root = yaml.load<Map<String, Any>>(yamlContent)
 
@@ -56,10 +58,11 @@ object TestBotParser {
             "wait" -> TestBotAction.Wait(parseDuration(value.toString()))
             "teleport" -> {
                 val coords = value as? List<*> ?: return null
+                if (coords.size < 3) return null
                 TestBotAction.Teleport(
-                    (coords[0] as Number).toDouble(),
-                    (coords[1] as Number).toDouble(),
-                    (coords[2] as Number).toDouble()
+                    (coords[0] as? Number)?.toDouble() ?: return null,
+                    (coords[1] as? Number)?.toDouble() ?: return null,
+                    (coords[2] as? Number)?.toDouble() ?: return null
                 )
             }
             "look_around" -> {
@@ -130,11 +133,11 @@ object TestBotParser {
             val value = entry.value
 
             when (key) {
-                "tps_above" -> TestBotAssertionSpec.TpsAbove((value as Number).toInt())
-                "no_crash" -> TestBotAssertionSpec.NoCrash(value as Boolean)
-                "no_deadlock" -> TestBotAssertionSpec.NoDeadlock(value as Boolean)
+                "tps_above" -> (value as? Number)?.toInt()?.let { TestBotAssertionSpec.TpsAbove(it) }
+                "no_crash" -> (value as? Boolean)?.let { TestBotAssertionSpec.NoCrash(it) }
+                "no_deadlock" -> (value as? Boolean)?.let { TestBotAssertionSpec.NoDeadlock(it) }
                 "heap_below" -> TestBotAssertionSpec.HeapBelow(parseSize(value.toString()))
-                "entity_count_above" -> TestBotAssertionSpec.EntityCountAbove((value as Number).toInt())
+                "entity_count_above" -> (value as? Number)?.toInt()?.let { TestBotAssertionSpec.EntityCountAbove(it) }
                 else -> null
             }
         }

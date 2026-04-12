@@ -161,9 +161,21 @@ class TestBotAssertionTest {
     }
 
     @Test
+    fun `HeapBelow fails when at exact limit`() {
+        val result = TestBotAssertion.evaluate(TestBotAssertionSpec.HeapBelow(2048), state(heapMb = 2048))
+        assertFalse(result.passed, "HeapBelow is strict < — exact limit should fail")
+    }
+
+    @Test
     fun `HeapBelow fails when over limit`() {
         val result = TestBotAssertion.evaluate(TestBotAssertionSpec.HeapBelow(2048), state(heapMb = 3000))
         assertFalse(result.passed)
+    }
+
+    @Test
+    fun `TpsAbove passes at exact boundary`() {
+        val result = TestBotAssertion.evaluate(TestBotAssertionSpec.TpsAbove(15), state(tps = 15.0f))
+        assertTrue(result.passed, "TpsAbove uses >= — exact boundary should pass")
     }
 
     @Test

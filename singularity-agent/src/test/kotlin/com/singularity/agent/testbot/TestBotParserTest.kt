@@ -269,4 +269,56 @@ class TestBotParserTest {
         assertEquals("unnamed", scenario.name)
         assertEquals(60, scenario.timeoutSeconds)
     }
+
+    @Test
+    fun `malformed assertion with string instead of number is skipped`() {
+        val yaml = """
+            scenario: test
+            timeout: 10s
+            actions: []
+            assertions:
+              - tps_above: fifteen
+              - no_crash: true
+        """.trimIndent()
+
+        val scenario = TestBotParser.parse(yaml)
+        // "tps_above: fifteen" should be skipped (string not number)
+        assertEquals(1, scenario.assertions.size)
+        assertTrue(scenario.assertions[0] is TestBotAssertionSpec.NoCrash)
+    }
+
+    @Test
+    fun `teleport with fewer than 3 coords is skipped`() {
+        val yaml = """
+            scenario: test
+            timeout: 10s
+            actions:
+              - teleport: [100, 64]
+        """.trimIndent()
+
+        val scenario = TestBotParser.parse(yaml)
+        assertTrue(scenario.actions.isEmpty(), "Teleport with <3 coords should be skipped")
+    }
+
+    @Test
+    fun `wait action does not call actionHandler in executor`() {
+        val handledActions = mutableListOf<String>()
+        val executor = com.singularity.agent.testbot.TestBotExecutor { action ->
+            handledActions.add(action::class.simpleName!!)
+        }
+
+        val scenario = TestBotScenario(
+            name = "wait-test",
+            timeoutSeconds = 10,
+            actions = listOf(
+                TestBotAction.Wait(0), // 0 seconds, no actual sleep
+                TestBotAction.Teleport(0.0, 0.0, 0.0)
+            ),
+            assertions = emptyList()
+        )
+
+        executor.execute(scenario)
+        // Wait should NOT appear in handledActions — executor handles it internally
+        assertEquals(listOf("Teleport"), handledActions)
+    }
 }

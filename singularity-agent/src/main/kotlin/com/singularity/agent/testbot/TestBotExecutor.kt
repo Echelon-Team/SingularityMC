@@ -39,12 +39,14 @@ class TestBotExecutor(
             try {
                 logger.info("Executing action {}/{}: {}",
                     index + 1, scenario.actions.size, action::class.simpleName)
-                actionHandler(action)
-                actionsExecuted++
 
                 if (action is TestBotAction.Wait) {
+                    // Wait is handled by executor directly — NOT passed to actionHandler
                     Thread.sleep(action.seconds * 1000L)
+                } else {
+                    actionHandler(action)
                 }
+                actionsExecuted++
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
                 failures.add("Action ${index + 1} interrupted")
