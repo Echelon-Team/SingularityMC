@@ -134,7 +134,11 @@ fun ResourceSlider(
         val totalSteps = ((range.last - range.first) / stepSize - 1).coerceAtLeast(0)
         Slider(
             value = value.toFloat(),
-            onValueChange = { onValueChange((it.toInt() / stepSize) * stepSize) },
+            onValueChange = { raw ->
+                val rounded = Math.round(raw)
+                val snapped = (rounded / stepSize) * stepSize
+                onValueChange(snapped.coerceIn(range.first, range.last))
+            },
             valueRange = range.first.toFloat()..range.last.toFloat(),
             steps = totalSteps,
             colors = SliderDefaults.colors(

@@ -211,10 +211,9 @@ fun InstancesScreen(
     if (state.isWizardOpen) {
         com.singularity.launcher.ui.screens.instances.wizard.NewInstanceWizard(
             onCancel = vm::closeWizard,
-            onCreate = { _ ->
-                // Task 32 — real create call via instanceManager.create()
+            onCreate = { config ->
                 vm.closeWizard()
-                vm.refresh()
+                vm.createInstance(config)
             }
         )
     }

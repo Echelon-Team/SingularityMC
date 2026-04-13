@@ -1,5 +1,6 @@
 package com.singularity.launcher.ui.screens.instances
 
+import com.singularity.common.model.InstanceConfig
 import com.singularity.common.model.InstanceType
 import com.singularity.launcher.service.InstanceManager
 import com.singularity.launcher.viewmodel.BaseViewModel
@@ -115,4 +116,15 @@ class InstancesViewModel(
     fun closeWizard() = updateState { it.copy(isWizardOpen = false) }
 
     fun refresh() = loadInstances()
+
+    fun createInstance(config: InstanceConfig) {
+        viewModelScope.launch {
+            try {
+                instanceManager.create(config)
+                loadInstances()
+            } catch (e: Exception) {
+                updateState { it.copy(error = "Nie udało się utworzyć instancji: ${e.message}") }
+            }
+        }
+    }
 }
