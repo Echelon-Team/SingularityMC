@@ -32,7 +32,7 @@ import org.slf4j.LoggerFactory
  * **API versioning:** pinned to `X-GitHub-Api-Version: 2022-11-28` to protect against future
  * default-version bumps on GitHub's side.
  */
-class NewsRepository(
+open class NewsRepository(
     private val httpClient: HttpClient,
     private val repoOwner: String = "Echelon-Team",
     private val repoName: String = "SingularityMC",
@@ -42,8 +42,11 @@ class NewsRepository(
     /**
      * @param limit number of stable releases to return (after filtering out pre-releases).
      *              Fetches up to 20 releases from GitHub, filters, then takes [limit].
+     *
+     * Declared `open` for test double substitution; Ktor's internal dispatcher doesn't
+     * respect `runTest` schedulers reliably, so some integration tests override this method.
      */
-    suspend fun fetchLatestReleases(limit: Int = 3): List<ReleaseInfo> {
+    open suspend fun fetchLatestReleases(limit: Int = 3): List<ReleaseInfo> {
         return try {
             val url = "https://api.github.com/repos/$repoOwner/$repoName/releases?per_page=20"
             val response: HttpResponse = httpClient.get(url) {
