@@ -8,6 +8,11 @@ import java.nio.file.Path
  * On Windows: `%APPDATA%\SingularityMC\`
  * On Linux: `$XDG_CONFIG_HOME/singularitymc/` (fallback: `~/.config/singularitymc/`)
  *
+ * **macOS:** current spec only covers Win + Linux. On macOS the class falls into the
+ * `else` branch (XDG-style path). This is intentional simplification — if macOS ever
+ * becomes an officially-supported target, the spec and this class should be revisited
+ * (macOS GUI convention is `~/Library/Application Support/SingularityMC/`).
+ *
  * Install-path resolution (Location 1 — binaries, `File-Backups/`) is a separate concern,
  * resolved at call sites of `LauncherSettingsStore` per plan Task 1.4.
  *
