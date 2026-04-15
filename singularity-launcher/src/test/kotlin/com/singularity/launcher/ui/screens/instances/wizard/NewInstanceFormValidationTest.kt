@@ -77,11 +77,11 @@ class NewInstanceFormValidationTest {
     }
 
     @Test
-    fun `resourcesStepValidate threads range 2 to totalCores`() {
-        assertFalse(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 4096, threads = 1), totalRam = 16384, totalCores = 8))
-        assertTrue(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 4096, threads = 2), totalRam = 16384, totalCores = 8))
-        assertTrue(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 4096, threads = 8), totalRam = 16384, totalCores = 8))
-        assertFalse(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 4096, threads = 16), totalRam = 16384, totalCores = 8))
+    fun `resourcesStepValidate threads range 2 to maxThreads`() {
+        assertFalse(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 4096, threads = 1), totalRam = 16384, maxThreads = 8))
+        assertTrue(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 4096, threads = 2), totalRam = 16384, maxThreads = 8))
+        assertTrue(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 4096, threads = 8), totalRam = 16384, maxThreads = 8))
+        assertFalse(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 4096, threads = 16), totalRam = 16384, maxThreads = 8))
     }
 
     @Test
