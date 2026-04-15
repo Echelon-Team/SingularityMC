@@ -57,7 +57,7 @@ class LauncherSettingsRoundtripTest {
     @Test
     fun `Store load-save roundtrip persists to file`() {
         val file = tempDir.resolve("launcher.json")
-        val store = LauncherSettingsStore(file)
+        val store = LauncherSettingsStore(file, tempDir.resolve("File-Backups"))
 
         // Initial load — default (file doesn't exist)
         val initial = store.load()
@@ -78,7 +78,7 @@ class LauncherSettingsRoundtripTest {
         java.nio.file.Files.createDirectories(file.parent)
         java.nio.file.Files.writeString(file, "{not valid json")
 
-        val store = LauncherSettingsStore(file)
+        val store = LauncherSettingsStore(file, tempDir.resolve("File-Backups"))
         val loaded = store.load()
         assertEquals(LauncherSettings(), loaded, "Corrupted JSON falls back to default")
     }
