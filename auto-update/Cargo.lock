@@ -3595,6 +3595,7 @@ dependencies = [
  "env_logger",
  "hex",
  "log",
+ "rand",
  "reqwest",
  "self-replace",
  "serde",

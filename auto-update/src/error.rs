@@ -38,12 +38,15 @@ pub enum UpdaterError {
     Json(#[from] serde_json::Error),
 
     /// Downloaded artifact hash does not match the manifest-declared hash.
-    /// This is a correctness / possible tampering signal; never silently swallowed.
-    #[error("hash mismatch for {path}: expected {expected}, got {actual}")]
+    /// This is a correctness / possible tampering signal; never silently
+    /// swallowed. `actual` is `Option` because the tmp file is sometimes
+    /// deleted before the hash can be re-captured — `None` in that case
+    /// rather than a sentinel string.
+    #[error("hash mismatch for {path}: expected {expected}, got {}", actual.as_ref().map_or("<unknown>".to_string(), |s| s.to_string()))]
     HashMismatch {
-        path: String,
-        expected: String,
-        actual: String,
+        path: crate::ManifestPath,
+        expected: crate::Sha256,
+        actual: Option<crate::Sha256>,
     },
 
     /// Manifest is present but semantically invalid (missing required field,
@@ -79,16 +82,28 @@ mod tests {
     use std::io;
 
     #[test]
-    fn hash_mismatch_display_includes_all_fields() {
+    fn hash_mismatch_display_includes_all_fields_when_actual_present() {
         let err = UpdaterError::HashMismatch {
-            path: "launcher.jar".into(),
-            expected: "abc".into(),
-            actual: "xyz".into(),
+            path: crate::ManifestPath::parse("launcher.jar").unwrap(),
+            expected: crate::Sha256::parse(&"a".repeat(64)).unwrap(),
+            actual: Some(crate::Sha256::parse(&"b".repeat(64)).unwrap()),
         };
         let msg = format!("{err}");
         assert!(msg.contains("launcher.jar"));
-        assert!(msg.contains("abc"));
-        assert!(msg.contains("xyz"));
+        assert!(msg.contains(&"a".repeat(64)));
+        assert!(msg.contains(&"b".repeat(64)));
+    }
+
+    #[test]
+    fn hash_mismatch_display_handles_absent_actual() {
+        let err = UpdaterError::HashMismatch {
+            path: crate::ManifestPath::parse("launcher.jar").unwrap(),
+            expected: crate::Sha256::parse(&"a".repeat(64)).unwrap(),
+            actual: None,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("launcher.jar"));
+        assert!(msg.contains("<unknown>"));
     }
 
     #[test]

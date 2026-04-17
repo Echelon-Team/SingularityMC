@@ -88,6 +88,12 @@ dirs = "6"
 # (transient AV scanner locks on freshly-written files).
 atomicwrites = "0.4"
 
+# Random jitter for downloader retry backoff. Without jitter, N clients hitting
+# a flaky CDN edge retry at identical offsets (2s, 4s, 8s...) — thundering-herd
+# amplification. Full-jitter sleep = uniform(0, base*2^attempt), AWS's
+# recommended pattern.
+rand = "0.9"
+
 [dev-dependencies]
 # tempfile — filesystem isolation for config / manifest / downloader / updater
 # module tests. Each test gets a throw-away directory that self-deletes on drop.
