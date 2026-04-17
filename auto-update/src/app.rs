@@ -2,17 +2,23 @@
 //! downloader → updater → launcher) and drives the shared UI state.
 //!
 //! Call [`run_update_flow`] from a tokio task with a [`UiState`] mutex
-//! shared with the egui app. On success it returns the relative launcher
-//! path ([`ManifestPath`]) the caller should hand off to
-//! [`launcher::spawn_launcher`]. On failure the UI state is already set
-//! to `FatalError`/`NoInternet`/`OfflineAvailable` as appropriate, and
-//! the error is also returned so the caller can log it.
+//! shared with the egui app, plus an mpsc `Receiver<UserAction>` the UI
+//! callbacks push into when the user clicks "Offline mode" or "Retry".
+//! On success the fn returns [`FlowOutcome`] the caller hands off to
+//! [`launcher::spawn_launcher`] (with `offline=false` for `Updated`,
+//! `offline=true` for `UserRequestedOffline`). On failure the UI state
+//! is already set to `FatalError`, and the error is also returned so
+//! the caller can log it.
+//!
+//! **Why mpsc, not Notify:** the spec lists two distinct user actions
+//! (offline / retry) — a single `Notify` cannot distinguish them, and
+//! the bounded channel drops duplicate clicks instead of stacking them.
 //!
 //! **Structure:** extracted from `main.rs` so the flow is testable
 //! without booting eframe. Pure helpers ([`current_os_target`],
 //! [`fresh_install_version`], [`set_state`]) have unit tests; the async
-//! pipeline is integration-level (real HTTP + filesystem) and left to
-//! Phase 5 manual smoke tests.
+//! pipeline is integration-level (real HTTP + filesystem) and covered
+//! by `tests/app_flow.rs` with wiremock.
 
 use crate::downloader::Downloader;
 use crate::github_api::{GitHubClient, Release};
@@ -25,6 +31,35 @@ use crate::{
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc;
+
+/// User-initiated action surfaced by the UI when the state machine is
+/// parked waiting for a decision (currently in `OfflineAvailable` or
+/// `DownloadFailed`). Variants are exhaustive by design — adding one
+/// forces every match site to handle it.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum UserAction {
+    /// Click on the "Offline mode" button — caller should spawn the
+    /// launcher with `--offline` from the last known-good install.
+    Offline,
+    /// Click on the "Retry" button — caller should restart the update
+    /// flow from the top (re-check GitHub).
+    Retry,
+}
+
+/// Terminal outcome of a single [`run_update_flow`] call. On `Updated`
+/// the caller spawns the launcher normally; on `UserRequestedOffline`
+/// the caller spawns with `offline=true`. `Retry` is handled internally
+/// (the flow loops back to the top), so it never surfaces here.
+#[derive(Debug)]
+pub enum FlowOutcome {
+    /// Normal update path succeeded — launcher path is the freshly
+    /// installed manifest's `launcher_executable`.
+    Updated(ManifestPath),
+    /// User explicitly chose "Offline mode" because the API was
+    /// unreachable. Path is read from the on-disk `local-manifest.json`.
+    UserRequestedOffline(ManifestPath),
+}
 
 /// GitHub repo coordinates — fixed at compile time per spec 4.x.
 pub const REPO_OWNER: &str = "Echelon-Team";
@@ -60,24 +95,62 @@ pub fn fresh_install_version() -> Version {
     Version::parse("0.0.0").expect("0.0.0 is a valid non-empty version")
 }
 
-/// Top-level update flow: check → download → verify → install. Returns
-/// the launcher executable's relative path on success so the caller can
-/// spawn it and exit.
+/// Internal outcome of a single `run_update_flow` attempt before the
+/// retry-loop collapses it to a [`FlowOutcome`]. `UserRetry` is the only
+/// signal that loops back to the top — everything else terminates.
+enum AttemptOutcome {
+    Succeeded(FlowOutcome),
+    UserRetry,
+}
+
+/// Top-level update flow: check → download → verify → install. Loops on
+/// explicit user `Retry` action (from the `OfflineAvailable` screen); all
+/// other paths terminate with a [`FlowOutcome`] or an error.
+///
+/// `user_rx` is consumed by the retry parking point in [`handle_api_failure`].
+/// The caller (main.rs) owns the matching `Sender` and wires it into the
+/// UI callbacks so button clicks become channel pushes.
 pub async fn run_update_flow(
     install_dir: PathBuf,
     channel: Channel,
     os: OsTarget,
     state: Arc<Mutex<UiState>>,
-) -> Result<ManifestPath> {
-    // Guarantee the "Checking..." screen is visible for long enough to
-    // register — prevents flash-then-gone on fast networks.
-    tokio::time::sleep(Duration::from_millis(CHECKING_MIN_MS)).await;
+    user_rx: &mut mpsc::Receiver<UserAction>,
+) -> Result<FlowOutcome> {
+    loop {
+        // Reset to Checking on every iteration — a retry from the offline
+        // screen needs to visually re-enter the flow from the top.
+        set_state(&state, UiState::Checking);
 
-    let github = GitHubClient::new(REPO_OWNER, REPO_NAME)?;
-    match github.latest_release(channel).await {
-        Ok(release) => process_release(install_dir, github, release, os, state).await,
-        Err(e) => {
-            handle_api_failure(install_dir, github, channel, os, state, e).await
+        // Guarantee the "Checking..." screen is visible for long enough
+        // to register — prevents flash-then-gone on fast networks.
+        tokio::time::sleep(Duration::from_millis(CHECKING_MIN_MS)).await;
+
+        let github = GitHubClient::new(REPO_OWNER, REPO_NAME)?;
+        let attempt = match github.latest_release(channel).await {
+            Ok(release) => {
+                let launcher_rel =
+                    process_release(install_dir.clone(), github, release, os, Arc::clone(&state))
+                        .await?;
+                AttemptOutcome::Succeeded(FlowOutcome::Updated(launcher_rel))
+            }
+            Err(e) => {
+                handle_api_failure(
+                    install_dir.clone(),
+                    github,
+                    channel,
+                    os,
+                    Arc::clone(&state),
+                    user_rx,
+                    e,
+                )
+                .await?
+            }
+        };
+
+        match attempt {
+            AttemptOutcome::Succeeded(outcome) => return Ok(outcome),
+            AttemptOutcome::UserRetry => continue,
         }
     }
 }
@@ -88,8 +161,9 @@ async fn handle_api_failure(
     channel: Channel,
     os: OsTarget,
     state: Arc<Mutex<UiState>>,
+    user_rx: &mut mpsc::Receiver<UserAction>,
     original_err: UpdaterError,
-) -> Result<ManifestPath> {
+) -> Result<AttemptOutcome> {
     log::warn!("GitHub API failed: {original_err}; entering retry loop");
 
     for attempt in 0..MAX_API_RETRIES {
@@ -102,33 +176,39 @@ async fn handle_api_failure(
         tokio::time::sleep(Duration::from_secs(u64::from(RETRY_INTERVAL_SECS))).await;
         match github.latest_release(channel).await {
             Ok(release) => {
-                return process_release(install_dir, github, release, os, state).await;
+                let launcher_rel =
+                    process_release(install_dir, github, release, os, state).await?;
+                return Ok(AttemptOutcome::Succeeded(FlowOutcome::Updated(launcher_rel)));
             }
             Err(e) => log::warn!("retry {} of {MAX_API_RETRIES} failed: {e}", attempt + 1),
         }
     }
 
     // Exhausted retries. If a local manifest exists, surface offline mode
-    // and let the UI callback drive process exit.
-    if manifest::load_local(&install_dir).is_some() {
+    // and park waiting for a UI button press (Offline / Retry). Channel
+    // close => UI gone => treat as fatal channel error.
+    if let Some(local) = manifest::load_local(&install_dir) {
         set_state(&state, UiState::OfflineAvailable);
-        // Park the worker. UI button callback handles offline-mode spawn +
-        // process_exit. 24h is effectively forever for this process.
-        tokio::time::sleep(Duration::from_secs(60 * 60 * 24)).await;
-        return Err(UpdaterError::NotFound(
-            "user did not pick offline mode within 24h".to_string(),
-        ));
+        match user_rx.recv().await {
+            Some(UserAction::Offline) => Ok(AttemptOutcome::Succeeded(
+                FlowOutcome::UserRequestedOffline(local.launcher_executable),
+            )),
+            Some(UserAction::Retry) => Ok(AttemptOutcome::UserRetry),
+            None => Err(UpdaterError::NotFound(
+                "UI action channel closed before user decision".to_string(),
+            )),
+        }
+    } else {
+        // First run + no internet = fatal. Surface the message; caller
+        // will also log::error the error.
+        set_state(
+            &state,
+            UiState::FatalError {
+                message: format!("{original_err}"),
+            },
+        );
+        Err(original_err)
     }
-
-    // First run + no internet = fatal. Surface the message; caller will
-    // also log::error the error.
-    set_state(
-        &state,
-        UiState::FatalError {
-            message: format!("{original_err}"),
-        },
-    );
-    Err(original_err)
 }
 
 async fn process_release(

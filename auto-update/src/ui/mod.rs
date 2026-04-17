@@ -170,6 +170,17 @@ impl eframe::App for AutoUpdateApp {
                     ui.label(s.download_failed);
                     ui.add_space(8.0);
                     ui.label(message);
+                    ui.add_space(12.0);
+                    // Explicit dismiss path: without this, a terminal
+                    // error leaves only the window's X as an exit — reads
+                    // as "frozen" to the user. `send_viewport_cmd` closes
+                    // eframe cleanly (runs `on_exit` hooks, releases GPU
+                    // resources), unlike a `process::exit` from the
+                    // background task which would skip teardown.
+                    if ui.button(s.close).clicked() {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 }
             }
         });

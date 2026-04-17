@@ -12,4 +12,5 @@ pub const STRINGS: &Strings = &Strings {
     help: "Pomoc",
     offline_mode: "TRYB OFFLINE",
     retry: "Ponów",
+    close: "Zamknij",
 };

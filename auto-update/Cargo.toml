@@ -49,6 +49,11 @@ tokio = { version = "1", features = [
     "io-util",
     "time",
     "signal",
+    # `sync` for mpsc::channel — Task 2.11 wires UI button clicks (offline/retry)
+    # into the parked state machine via bounded channel. Without this, the
+    # update flow uses a 24h sleep as a "wait for user" hack, and the callbacks
+    # are never installed so clicks are silently dropped.
+    "sync",
 ] }
 
 # Serialization (serde + serde_json for manifest/config files).

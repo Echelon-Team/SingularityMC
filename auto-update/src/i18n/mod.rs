@@ -69,6 +69,11 @@ pub struct Strings {
     pub help: &'static str,
     pub offline_mode: &'static str,
     pub retry: &'static str,
+    /// Dismiss button shown on the `FatalError` screen. Without this,
+    /// terminal errors leave the user with only the window's X as a way
+    /// out — which reads as "the app froze" rather than "I understand,
+    /// I've read the error, I'm closing it."
+    pub close: &'static str,
 }
 
 /// Resolve a stored [`LanguagePreference`] to a concrete [`Lang`].
@@ -193,6 +198,7 @@ mod tests {
                 ("help", s.help),
                 ("offline_mode", s.offline_mode),
                 ("retry", s.retry),
+                ("close", s.close),
             ] {
                 assert!(!v.is_empty(), "{lang:?}.{name} must not be empty");
             }
