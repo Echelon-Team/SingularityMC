@@ -18,6 +18,7 @@ pub mod config;
 pub mod downloader;
 pub mod error;
 pub mod github_api;
+pub mod launcher;
 pub mod manifest;
 pub mod self_update;
 pub mod updater;
@@ -26,6 +27,7 @@ pub mod util;
 pub use config::{AutoUpdateConfig, Channel, LanguagePreference};
 pub use downloader::Downloader;
 pub use error::{Result, UpdaterError};
+pub use launcher::{AutoUpdateState, CrashCounterKind};
 pub use updater::Updater;
 // Asset intentionally NOT re-exported: external consumers reach it via
 // `release.assets` field access; adding it to the public root would widen
