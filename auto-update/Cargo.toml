@@ -1,0 +1,97 @@
+[package]
+name = "singularitymc-auto-update"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Auto-update bootstrap for the SingularityMC launcher"
+
+# Per-crate lint configuration: pedantic-warn by default so we catch code smells
+# early across the whole auto-update binary. Individual allows should be added
+# at the call site via `#[allow(clippy::...)]` with a justifying comment, NOT
+# by relaxing these global levels.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Pragmatic allows — noise without payoff for an application binary:
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+
+[dependencies]
+# GUI (egui immediate-mode + eframe runtime). Versions MUST match.
+eframe = "0.34"
+egui = "0.34"
+
+# HTTP client — pinned to 0.12 deliberately.
+#
+# reqwest 0.13+ forces aws-lc-rs as the rustls backend (no public opt-out to
+# the ring backend), and aws-lc-rs requires CMake + NASM at build time on
+# Windows — a blocker on clean dev machines. 0.12 still uses rustls + ring,
+# so `rustls-tls-native-roots` gives us:
+#   - ring backend (no CMake/NASM build deps),
+#   - reads Windows' installed certificate store (corporate proxies with
+#     custom CAs keep working),
+#   - no system OpenSSL dependency.
+# Revisit when reqwest adds a public ring feature flag on 0.13+.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls-native-roots",
+    "charset",
+    "http2",
+] }
+
+# Async runtime. `signal` feature enables Ctrl-C/SIGTERM handlers needed for
+# graceful shutdown (flush partial downloads, release file locks) in later tasks.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "fs",
+    "io-util",
+    "time",
+    "signal",
+] }
+
+# Serialization (serde + serde_json for manifest/config files).
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Hashing for SHA-256 manifest verification (Task 2.5).
+sha2 = "0.10"
+hex = "0.4"
+
+# Atomic self-replace of the running executable (Task 2.7).
+self-replace = "1.5"
+
+# OS-level locale detection (Task 2.9 i18n routing).
+sys-locale = "0.3"
+
+# Error handling split:
+#   thiserror -> typed enum errors in library modules (this binary's `error.rs`).
+#   anyhow    -> top-level main() + ad-hoc propagation where typed variants
+#                would be premature.
+anyhow = "1.0"
+thiserror = "2"
+
+# Logging facade + production backend. Install the backend via env_logger::init()
+# in main(); without that call, every `log::warn!` etc. is a silent no-op.
+log = "0.4"
+env_logger = "0.11"
+
+# OS-specific directory lookups (AppData on Windows, ~/.config on Linux).
+dirs = "6"
+
+[dev-dependencies]
+# Kept deliberately small for Task 2.1 — tests/smoke.rs only needs Cargo's
+# CARGO_BIN_EXE_<name> env var which is always available in integration tests.
+# Subsequent tasks will add: mockito/wiremock (HTTP mocking), tempfile
+# (filesystem isolation), tokio-test (async assertions), assert_cmd + predicates
+# (CLI integration).
+
+[profile.release]
+# Optimize binary size + startup time — we ship this to every user.
+# `panic = "unwind"` (the default) is retained explicitly NOT to switch to
+# abort: we want full backtraces on user crash reports even at the cost of
+# a slightly larger binary. See review decision with Mateusz 2026-04-17.
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

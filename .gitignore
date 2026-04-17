@@ -34,6 +34,12 @@ bin/
 hs_err_pid*
 replay_pid*
 
+# --- Rust / Cargo ---
+# target/ pattern above already covers auto-update/target/.
+# Cargo.lock IS committed for the auto-update binary crate (deterministic
+# end-user builds). Do not add it to this ignore list.
+**/*.pdb
+
 # --- JARs: ignoruj wszystkie, ale wyjatki dla wrapper i lokalnych libs ---
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
