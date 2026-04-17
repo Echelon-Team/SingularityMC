@@ -74,6 +74,22 @@ pub enum UpdaterError {
     /// was attempted on the wire — this fires at client construction.
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+
+    /// File-swap failed AND rollback was unable to fully restore the
+    /// pre-update state. The caller's installation is left in a
+    /// partially-rolled-back mix and the user must be prompted to reinstall.
+    /// `original` is the swap failure that triggered rollback;
+    /// `rollback_failures` contains formatted per-file errors from the
+    /// restore/delete attempts.
+    ///
+    /// Clean rollbacks (swap failed, every file restored cleanly) surface
+    /// the original error directly — this variant signals "manual
+    /// intervention needed" specifically.
+    #[error("swap failed: {original}; {n} file(s) failed to roll back", n = rollback_failures.len())]
+    SwapFailed {
+        original: Box<UpdaterError>,
+        rollback_failures: Vec<String>,
+    },
 }
 
 #[cfg(test)]
