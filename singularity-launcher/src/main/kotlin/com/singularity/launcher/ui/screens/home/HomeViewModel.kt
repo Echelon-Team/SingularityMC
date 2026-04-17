@@ -3,8 +3,7 @@ package com.singularity.launcher.ui.screens.home
 import com.singularity.common.model.InstanceType
 import com.singularity.launcher.config.OfflineMode
 import com.singularity.launcher.service.InstanceManager
-import com.singularity.launcher.service.news.NewsCache
-import com.singularity.launcher.service.news.NewsRepository
+import com.singularity.launcher.service.news.NewsSource
 import com.singularity.launcher.service.news.ReleaseInfo
 import com.singularity.launcher.viewmodel.BaseViewModel
 import kotlinx.coroutines.CancellationException
@@ -101,8 +100,7 @@ fun formatLastPlayedSubtitle(
 class HomeViewModel(
     private val instanceManager: InstanceManager,
     dispatcher: CoroutineDispatcher = Dispatchers.Swing,
-    private val newsRepository: NewsRepository? = null,
-    private val newsCache: NewsCache? = null,
+    private val newsSource: NewsSource? = null,
 ) : BaseViewModel<HomeState>(HomeState(), dispatcher) {
 
     init {
@@ -139,8 +137,8 @@ class HomeViewModel(
      *
      * Strategy:
      * 1. [OfflineMode] enabled → [ReleasesState.Offline].
-     * 2. [newsRepository] or [newsCache] absent (null) → [ReleasesState.Unavailable].
-     *    Production wiring bug OR legacy 2-arg ctor; logged as warn.
+     * 2. [newsSource] absent (null) → [ReleasesState.Unavailable]. Production wiring bug
+     *    OR legacy 2-arg ctor; logged as warn.
      * 3. Cache hit → [ReleasesState.Loaded] with cached value.
      * 4. Cache miss → fetch via repository (with defense try/catch), populate cache on
      *    non-empty success. Empty fetch NOT cached (allows retry on next call) and reports
@@ -153,17 +151,14 @@ class HomeViewModel(
             updateState { it.copy(releasesState = ReleasesState.Offline) }
             return
         }
-        if (newsRepository == null || newsCache == null) {
-            logger.warn(
-                "HomeViewModel: news wiring missing (newsRepository={}, newsCache={}) — releases disabled",
-                newsRepository != null,
-                newsCache != null,
-            )
+        val source = newsSource
+        if (source == null) {
+            logger.warn("HomeViewModel: NewsSource not wired — releases disabled")
             updateState { it.copy(releasesState = ReleasesState.Unavailable) }
             return
         }
 
-        newsCache.get()?.let { cached ->
+        source.cache.get()?.let { cached ->
             updateState { it.copy(releasesState = ReleasesState.Loaded(cached)) }
             return
         }
@@ -173,7 +168,7 @@ class HomeViewModel(
             // Defense-in-depth: NewsRepository contract guarantees empty-on-failure and
             // rethrows CancellationException, but guard against future refactor bugs.
             val fetched = try {
-                newsRepository.fetchLatestReleases(limit = 3)
+                source.repository.fetchLatestReleases(limit = 3)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -181,7 +176,7 @@ class HomeViewModel(
                 emptyList()
             }
             if (fetched.isNotEmpty()) {
-                newsCache.put(fetched)  // don't cache empty — next load retries
+                source.cache.put(fetched)  // don't cache empty — next load retries
                 updateState { it.copy(releasesState = ReleasesState.Loaded(fetched)) }
             } else {
                 updateState { it.copy(releasesState = ReleasesState.FetchFailed) }

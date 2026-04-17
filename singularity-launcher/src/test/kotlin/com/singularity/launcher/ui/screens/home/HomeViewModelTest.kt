@@ -7,6 +7,7 @@ import com.singularity.launcher.config.OfflineMode
 import com.singularity.launcher.service.InstanceManager
 import com.singularity.launcher.service.news.NewsCache
 import com.singularity.launcher.service.news.NewsRepository
+import com.singularity.launcher.service.news.NewsSource
 import com.singularity.launcher.service.news.ReleaseInfo
 import io.ktor.client.*
 import io.ktor.client.engine.mock.*
@@ -167,7 +168,7 @@ class HomeViewModelTest {
     // === loadReleases tests (Task 1.8) ===
 
     @Test
-    fun `loadReleases sets Unavailable when newsRepository is null (legacy ctor)`() = runTest {
+    fun `loadReleases sets Unavailable when newsSource is null (legacy ctor)`() = runTest {
         val vm = HomeViewModel(FakeInstanceManager(), UnconfinedTestDispatcher(testDispatcher.scheduler))
         testDispatcher.scheduler.advanceUntilIdle()
 
@@ -184,8 +185,7 @@ class HomeViewModelTest {
         val vm = HomeViewModel(
             FakeInstanceManager(),
             UnconfinedTestDispatcher(testDispatcher.scheduler),
-            newsRepository = repo,
-            newsCache = cache,
+            newsSource = NewsSource(repo, cache),
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
@@ -202,8 +202,7 @@ class HomeViewModelTest {
         val vm = HomeViewModel(
             FakeInstanceManager(),
             UnconfinedTestDispatcher(testDispatcher.scheduler),
-            newsRepository = repo,
-            newsCache = cache,
+            newsSource = NewsSource(repo, cache),
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
@@ -220,8 +219,7 @@ class HomeViewModelTest {
         val vm = HomeViewModel(
             FakeInstanceManager(),
             UnconfinedTestDispatcher(testDispatcher.scheduler),
-            newsRepository = repo,
-            newsCache = cache,
+            newsSource = NewsSource(repo, cache),
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
@@ -238,8 +236,7 @@ class HomeViewModelTest {
         val vm = HomeViewModel(
             FakeInstanceManager(),
             UnconfinedTestDispatcher(testDispatcher.scheduler),
-            newsRepository = repo,
-            newsCache = cache,
+            newsSource = NewsSource(repo, cache),
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
@@ -263,8 +260,7 @@ class HomeViewModelTest {
         val vm = HomeViewModel(
             FakeInstanceManager(),
             UnconfinedTestDispatcher(testDispatcher.scheduler),
-            newsRepository = throwingRepo,
-            newsCache = cache,
+            newsSource = NewsSource(throwingRepo, cache),
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
@@ -288,8 +284,7 @@ class HomeViewModelTest {
         val vm = HomeViewModel(
             FakeInstanceManager(),
             standardDispatcher,
-            newsRepository = repo,
-            newsCache = cache,
+            newsSource = NewsSource(repo, cache),
         )
 
         // Capture state BEFORE advancing scheduler — fetch coroutine is pending.
@@ -341,8 +336,7 @@ class HomeViewModelTest {
         val vm = HomeViewModel(
             FakeInstanceManager(),
             UnconfinedTestDispatcher(testDispatcher.scheduler),
-            newsRepository = repo,
-            newsCache = cache,
+            newsSource = NewsSource(repo, cache),
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
@@ -376,8 +370,7 @@ class HomeViewModelTest {
         val vm = HomeViewModel(
             FakeInstanceManager(),
             UnconfinedTestDispatcher(testDispatcher.scheduler),
-            newsRepository = cancellingRepo,
-            newsCache = cache,
+            newsSource = NewsSource(cancellingRepo, cache),
         )
         testDispatcher.scheduler.advanceUntilIdle()
 

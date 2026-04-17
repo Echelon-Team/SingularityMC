@@ -46,6 +46,9 @@ import com.singularity.launcher.service.java.JavaManagerImpl
 import com.singularity.launcher.service.modrinth.ModrinthClient
 import com.singularity.launcher.service.modrinth.ModrinthClientImpl
 import com.singularity.launcher.service.mojang.MojangVersionClient
+import com.singularity.launcher.service.news.NewsCache
+import com.singularity.launcher.service.news.NewsRepository
+import com.singularity.launcher.service.news.NewsSource
 import com.singularity.launcher.ui.background.ThemeTransitionBackground
 import com.singularity.launcher.ui.components.SingularitySidebar
 import com.singularity.launcher.ui.di.LocalAuthManager
@@ -78,6 +81,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.swing.Swing
 import kotlinx.serialization.json.Json
 import java.nio.file.Path
+import java.time.Duration
 
 /**
  * Główny container aplikacji — wire'uje wszystkie serwisy, CompositionLocal provider'y,
@@ -139,6 +143,13 @@ fun App() {
     }
     val authManager: AuthManager = remember { AuthManagerImpl.default() }
     val modrinthClient: ModrinthClient = remember { ModrinthClientImpl(httpClient) }
+
+    // News feed (Home → Aktualności per spec 4.12) — shared HttpClient, 6h TTL cache
+    // (14x safety margin vs GitHub's 60 req/hr unauthenticated rate limit).
+    val newsRepository = remember { NewsRepository(httpClient) }
+    val newsCache = remember { NewsCache(Duration.ofHours(6)) }
+    val newsSource = remember(newsRepository, newsCache) { NewsSource(newsRepository, newsCache) }
+
     val ipcClient: IpcClient = remember {
         IpcClientReal(launcherHome.resolve("instances"), appScope)
     }
@@ -256,7 +267,9 @@ fun App() {
                     Box(modifier = Modifier.fillMaxSize()) {
                         when (navState.currentScreen) {
                             Screen.HOME -> {
-                                val homeVm = remember(instanceManager) { HomeViewModel(instanceManager) }
+                                val homeVm = remember(instanceManager, newsSource) {
+                                    HomeViewModel(instanceManager, newsSource = newsSource)
+                                }
                                 DisposableEffect(homeVm) { onDispose { homeVm.onCleared() } }
                                 HomeScreen(
                                     viewModel = homeVm,
