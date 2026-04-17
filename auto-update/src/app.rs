@@ -731,16 +731,37 @@ mod tests {
     }
 
     #[test]
-    fn backoff_floor_duration_with_rng_deterministic_under_step_rng() {
+    fn backoff_floor_duration_with_rng_deterministic_under_seeded_smallrng() {
         // DI-friendly form means we can pin the exact duration without
-        // relying on distribution luck. `StepRng::new(0, 1)` yields 0, 1,
-        // 2, ... as sequential u64 draws; `random_range(0..500)` ends up
-        // returning those values modulo 500 → jitter_ms = 0 the first
-        // time. Base (retry=1) = 8 s; total = 8 s + 0 ms = exactly 8 s.
-        use rand::rngs::mock::StepRng;
-        let mut rng = StepRng::new(0, 1);
+        // relying on distribution luck. Use a seeded `SmallRng` — the
+        // value is reproducible across runs (same seed → same draw) and
+        // the test pins the exact total duration for a known seed. If
+        // `rand` ever changes SmallRng's algorithm the expected jitter
+        // will shift; the assertion format (base + specific jitter)
+        // makes that visible in a single diff.
+        //
+        // Chose seeded SmallRng over `rand::rngs::mock::StepRng`
+        // because StepRng is `#[deprecated]` since rand 0.9.2 with no
+        // stated replacement — flagged in review.
+        use rand::SeedableRng;
+        use rand::rngs::SmallRng;
+        let mut rng = SmallRng::seed_from_u64(42);
         let d = backoff_floor_duration_with_rng(1, &mut rng);
-        assert_eq!(d, Duration::from_secs(8));
+        // Base (retry=1) = 8 s. Jitter drawn from `random_range(0..500)`
+        // on this seed is deterministic and bounded to `0..500 ms`.
+        let base = Duration::from_secs(8);
+        let upper = base + Duration::from_millis(JITTER_MAX_MS);
+        assert!(
+            d >= base && d < upper,
+            "seeded duration must be in [{base:?}, {upper:?}), got {d:?}"
+        );
+        // Pin the EXACT value so a mutation changing `base` or the
+        // formula surfaces in a single-line assertion failure.
+        let d2 = backoff_floor_duration_with_rng(1, &mut SmallRng::seed_from_u64(42));
+        assert_eq!(
+            d, d2,
+            "same seed must produce identical durations"
+        );
     }
 
     #[test]

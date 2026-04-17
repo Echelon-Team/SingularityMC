@@ -835,27 +835,36 @@ async fn download_failed_without_local_hides_offline_flag() {
 #[tokio::test(flavor = "current_thread")]
 async fn temp_dir_pre_clean_wipes_stale_content_on_entry() {
     // Pre-existing `.tmp-update/` content from a crashed prior run
-    // must be wiped when `process_release` starts. Previously the
-    // stale sentinel was at `.tmp-update/leftover-from-crash.bin` —
-    // a path the downloader never touches, so even without the
-    // pre-clean the test passed (TempDirGuard::drop wipes it on exit).
-    // NOW we seed at the EXACT path the downloader will write to
-    // (`.tmp-update/launcher/app.jar`) with wrong bytes: if the
-    // pre-clean is removed, the stale file's bytes would still sit
-    // there at process_release entry and the hash-verify step would
-    // fail (bytes != expected). The flow must succeed, proving the
-    // pre-clean ran.
+    // must be wiped when `process_release` starts.
+    //
+    // Previous iterations of this test seeded either (a) an unrelated
+    // sentinel file at a path the downloader never touches, or (b)
+    // stale bytes at the download target. Both FALSELY passed: (a)
+    // TempDirGuard::drop wipes on exit regardless; (b) `File::create`
+    // truncates, so stale bytes get overwritten before hash-verify.
+    //
+    // The reliable signal: the `Downloader` writes to
+    // `.tmp-update/<basename>` (downloader.rs:134 — file_name is the
+    // basename of `file.path`, NOT the full relative path). Seed a
+    // DIRECTORY at that exact path. With pre-clean: remove_dir_all
+    // wipes `.tmp-update/` entirely, Downloader::new recreates it
+    // empty, `File::create(".tmp-update/app.jar")` succeeds because
+    // there's no directory in the way. WITHOUT pre-clean: the
+    // directory survives process_release entry, `File::create` fails
+    // with "Is a directory"/"Access is denied", and the flow errors
+    // out. Mutation finally catches.
     let install_dir = tempfile::tempdir().unwrap();
     let stale_temp = install_dir.path().join(".tmp-update");
-    std::fs::create_dir_all(stale_temp.join("launcher")).unwrap();
-    let stale_at_download_path = stale_temp.join("launcher/app.jar");
-    std::fs::write(&stale_at_download_path, b"STALE BYTES WRONG HASH").unwrap();
-    // Keep the root sentinel too — proves neither path survives.
-    let stale_sentinel = stale_temp.join("leftover-from-crash.bin");
-    std::fs::write(&stale_sentinel, b"stale").unwrap();
+    // Create a directory exactly where the downloader will try to
+    // `File::create` the JAR (basename = "app.jar", per
+    // downloader.rs:134 basename-only logic).
+    let blocking_dir = stale_temp.join("app.jar");
+    std::fs::create_dir_all(&blocking_dir).unwrap();
+    std::fs::write(blocking_dir.join("junk.bin"), b"survives without pre-clean")
+        .unwrap();
     assert!(
-        stale_at_download_path.exists() && stale_sentinel.exists(),
-        "pre-condition: stale content in place"
+        blocking_dir.is_dir(),
+        "pre-condition: directory obstruction at download target"
     );
 
     let server = MockServer::start().await;
@@ -903,16 +912,15 @@ async fn temp_dir_pre_clean_wipes_stale_content_on_entry() {
     )
     .await;
 
+    // With the entry pre-clean active, the blocking directory is
+    // removed before the download starts, `File::create` succeeds,
+    // and the flow reports Updated. Without the pre-clean (mutation:
+    // delete `fs::remove_dir_all(&temp_dir)` at process_release top),
+    // the directory remains and `File::create` fails → flow returns
+    // Err. This is the assertion that actually gates the pre-clean.
     assert!(
         matches!(result, Ok(FlowOutcome::Updated(_))),
-        "flow must complete after pre-clean, got {result:?}"
-    );
-    // Stale sentinel must be gone (pre-clean + TempDirGuard drop both
-    // wipe .tmp-update/; either would satisfy this assertion, but the
-    // *entry* pre-clean is the mechanism keeping the flow correct if
-    // the guard ever regressed).
-    assert!(
-        !stale_sentinel.exists(),
-        "stale leftover must be removed on process_release entry"
+        "pre-clean must remove the blocking directory so File::create \
+         can create the fresh download file; got {result:?}"
     );
 }
