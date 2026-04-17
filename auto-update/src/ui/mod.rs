@@ -40,7 +40,6 @@ pub struct AutoUpdateApp {
     state: Arc<Mutex<UiState>>,
     lang: Lang,
     on_offline_mode: Option<Callback>,
-    on_retry: Option<Callback>,
 }
 
 impl AutoUpdateApp {
@@ -50,7 +49,6 @@ impl AutoUpdateApp {
             state: Arc::new(Mutex::new(initial_state)),
             lang,
             on_offline_mode: None,
-            on_retry: None,
         }
     }
 
@@ -69,15 +67,6 @@ impl AutoUpdateApp {
         F: Fn() + Send + Sync + 'static,
     {
         self.on_offline_mode = Some(Box::new(f));
-    }
-
-    /// Install the callback invoked when the user clicks "retry".
-    /// Typically re-triggers the update flow from the top.
-    pub fn set_retry_callback<F>(&mut self, f: F)
-    where
-        F: Fn() + Send + Sync + 'static,
-    {
-        self.on_retry = Some(Box::new(f));
     }
 }
 
@@ -154,16 +143,16 @@ impl eframe::App for AutoUpdateApp {
                 UiState::DownloadFailed { has_offline } => {
                     ui.label(s.download_failed);
                     ui.horizontal(|ui| {
-                        if ui.button(s.retry).clicked() {
-                            if let Some(cb) = &self.on_retry {
-                                cb();
-                            }
-                        }
+                        // "Retry" button removed in T2.11f6 — the state
+                        // machine auto-retries on the cooldown ladder
+                        // now, so the user never needs to click one.
+                        // T2.11f8 adds unified "Wyjdź" + "Pomoc" buttons
+                        // here so the user can still exit voluntarily.
+                        //
                         // Offline button only when a local install is
                         // actually available to fall back to — otherwise
-                        // clicking it drops to FatalError, which reads
-                        // as a broken UI. Fresh installs (no
-                        // local-manifest.json yet) see Retry + Close only.
+                        // clicking it drops to FatalError. Fresh
+                        // installs see only Close for now.
                         if *has_offline && ui.button(s.offline_mode).clicked() {
                             if let Some(cb) = &self.on_offline_mode {
                                 cb();
@@ -214,7 +203,6 @@ mod tests {
         assert_eq!(app.lang, Lang::Pl);
         // Default callbacks unset.
         assert!(app.on_offline_mode.is_none());
-        assert!(app.on_retry.is_none());
     }
 
     #[test]
@@ -232,11 +220,9 @@ mod tests {
     }
 
     #[test]
-    fn callbacks_can_be_installed() {
+    fn offline_callback_can_be_installed() {
         let mut app = AutoUpdateApp::new(Lang::En, UiState::Checking);
-        app.set_retry_callback(|| {});
         app.set_offline_mode_callback(|| {});
-        assert!(app.on_retry.is_some());
         assert!(app.on_offline_mode.is_some());
     }
 

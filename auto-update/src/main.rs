@@ -110,17 +110,13 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    let retry_tx = user_tx.clone();
-    app.set_retry_callback(move || {
-        if let Err(e) = retry_tx.try_send(UserAction::Retry) {
-            log::warn!("retry click ignored: {e}");
-        }
-    });
-
-    // Drop the original sender so the channel closes as soon as the two
-    // UI callbacks' clones are dropped (they drop when the eframe loop
+    // Retry is no longer a UI action — the state machine auto-retries
+    // on the cooldown ladder; `UserAction::Retry` was removed. We drop
+    // the original sender so the channel closes as soon as the single
+    // remaining `offline_tx` clone is dropped (when the eframe loop
     // exits). Without this, the last `user_tx` handle would linger in
-    // main and the worker's `recv().await` could block past window close.
+    // main and the worker's `recv().await` could block past window
+    // close.
     drop(user_tx);
 
     let install_dir_bg = install_dir.clone();

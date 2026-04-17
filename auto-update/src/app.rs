@@ -37,20 +37,23 @@ use tokio::sync::mpsc;
 /// parked waiting for a decision — emitted from the `OfflineAvailable`
 /// or `DownloadFailed` screens.
 ///
-/// `#[non_exhaustive]` because this is part of the crate's public surface
-/// (UI ↔ state machine contract) — adding a future variant (e.g.
-/// `QuitNow`, `SkipUpdate`) would otherwise be a breaking change.
-/// Internal match sites in this crate still need to be exhaustive;
-/// `non_exhaustive` only affects external consumers.
+/// Only one variant exists today: `Offline` (user consciously chose to
+/// launch the locally-installed version instead of waiting for the
+/// update). Retry is no longer a UI affordance — the state machine
+/// auto-retries on its own cadence (see the cooldown ladder), so the
+/// user never clicks "Retry" anywhere. Other exit paths (closing the
+/// window, clicking Help / Exit) don't go through this channel.
+///
+/// `#[non_exhaustive]` because this is part of the crate's public
+/// surface (UI ↔ state machine contract) — adding a future variant
+/// (e.g. `QuitNow`, `SkipUpdate`) should be non-breaking. Internal
+/// match sites in this crate still need to be exhaustive.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum UserAction {
     /// Click on the "Offline mode" button — caller should spawn the
     /// launcher with `--offline` from the last known-good install.
     Offline,
-    /// Click on the "Retry" button — caller should restart the update
-    /// flow from the top (re-check GitHub).
-    Retry,
 }
 
 /// Terminal outcome of a single [`run_update_flow`] call. On `Updated`
@@ -118,21 +121,27 @@ fn old_version_display(old_version: Option<&Version>) -> String {
     }
 }
 
-/// Internal outcome of a single `run_update_flow` attempt before the
-/// retry-loop collapses it to a [`FlowOutcome`]. `UserRetry` is the only
-/// signal that loops back to the top — everything else terminates.
+/// Internal outcome of a single `run_update_flow` attempt. Previously
+/// had a `UserRetry` variant that fed the outer loop's `continue` path;
+/// that variant is gone now that the UI doesn't surface a Retry button —
+/// auto-retries happen on the cooldown ladder's own tick, not on a
+/// user click. Kept as a struct enum to leave room for future "loop
+/// back" variants (e.g. AutoRetryTick in T2.11f7) without reshaping the
+/// return type.
 enum AttemptOutcome {
     Succeeded(FlowOutcome),
-    UserRetry,
 }
 
-/// Top-level update flow: check → download → verify → install. Loops on
-/// explicit user `Retry` action (from the `OfflineAvailable` screen); all
-/// other paths terminate with a [`FlowOutcome`] or an error.
+/// Top-level update flow: check → download → verify → install. Runs
+/// once per call today (the only outer-loop continuation was
+/// `UserAction::Retry`, which has been removed); T2.11f7 will
+/// reintroduce a background-tick loop here so the flow auto-retries
+/// from parked states without user action.
 ///
-/// `user_rx` is consumed by the retry parking point in [`handle_api_failure`].
-/// The caller (main.rs) owns the matching `Sender` and wires it into the
-/// UI callbacks so button clicks become channel pushes.
+/// `user_rx` is consumed by the parking points in [`handle_api_failure`]
+/// / [`park_on_download_failure`]. The caller (main.rs) owns the matching
+/// `Sender` and wires it into the UI callbacks so button clicks become
+/// channel pushes.
 pub async fn run_update_flow(
     install_dir: PathBuf,
     channel: Channel,
@@ -266,69 +275,24 @@ pub async fn run_update_flow_with_config(
     user_rx: &mut mpsc::Receiver<UserAction>,
     cfg: RunUpdateFlowConfig,
 ) -> Result<FlowOutcome> {
-    let mut iteration: u32 = 0;
-    loop {
-        // Rate-limit the outer retry loop against a spam-clicker facing
-        // instantly-failing startup (e.g. TLS init fails before any
-        // network call). First attempt AND first user-initiated Retry
-        // run immediately — the UX cost of a 1 s freeze after a single
-        // click is worse than the upside of throttling a single retry.
-        // From the SECOND Retry onward, wait an exponential floor
-        // (1 s, 2 s, 4 s, 8 s, 16 s — capped). See [`backoff_floor_secs`]
-        // for the table + unit tests.
-        //
-        // Test override via `cfg.retry_interval_secs == 0` zeros the
-        // floor entirely so integration tests resolve in single-digit
-        // milliseconds.
-        if iteration > 1 && cfg.retry_interval_secs > 0 {
-            let floor = backoff_floor_duration_with_jitter(iteration - 1);
-            tokio::time::sleep(floor).await;
-        }
-        iteration = iteration.saturating_add(1);
+    // Checking-screen floor so "Sprawdzanie aktualizacji..." doesn't
+    // flash-and-gone on fast networks.
+    set_state(&state, UiState::Checking);
+    tokio::time::sleep(Duration::from_millis(cfg.checking_min_ms)).await;
 
-        // Reset to Checking on every iteration — a retry from the offline
-        // screen needs to visually re-enter the flow from the top.
-        set_state(&state, UiState::Checking);
-
-        // Guarantee the "Checking..." screen is visible for long enough
-        // to register — prevents flash-then-gone on fast networks.
-        tokio::time::sleep(Duration::from_millis(cfg.checking_min_ms)).await;
-
-        let github =
-            GitHubClient::with_base_url(&cfg.github_base_url, REPO_OWNER, REPO_NAME)?;
-        let attempt = match github.latest_release(channel).await {
-            Ok(release) => {
-                process_release_or_park(
-                    install_dir.clone(),
-                    github,
-                    release,
-                    os,
-                    Arc::clone(&state),
-                    user_rx,
-                    &cfg,
-                )
+    let github =
+        GitHubClient::with_base_url(&cfg.github_base_url, REPO_OWNER, REPO_NAME)?;
+    let AttemptOutcome::Succeeded(outcome) = (match github.latest_release(channel).await {
+        Ok(release) => {
+            process_release_or_park(install_dir, github, release, os, state, user_rx, &cfg)
                 .await?
-            }
-            Err(e) => {
-                handle_api_failure(
-                    install_dir.clone(),
-                    github,
-                    channel,
-                    os,
-                    Arc::clone(&state),
-                    user_rx,
-                    &cfg,
-                    e,
-                )
-                .await?
-            }
-        };
-
-        match attempt {
-            AttemptOutcome::Succeeded(outcome) => return Ok(outcome),
-            AttemptOutcome::UserRetry => continue,
         }
-    }
+        Err(e) => {
+            handle_api_failure(install_dir, github, channel, os, state, user_rx, &cfg, e)
+                .await?
+        }
+    });
+    Ok(outcome)
 }
 
 async fn handle_api_failure(
@@ -372,16 +336,18 @@ async fn handle_api_failure(
         }
     }
 
-    // Exhausted retries. If a local manifest exists, surface offline mode
-    // and park waiting for a UI button press (Offline / Retry). Channel
-    // close => UI gone => treat as fatal channel error.
+    // Exhausted retries. If a local manifest exists, surface offline
+    // mode and park waiting for the user's Offline click. T2.11f7 will
+    // add a background auto-retry that races this park so the flow
+    // resumes on its own when the API comes back — for now the only
+    // exits are: user clicks Offline, or closes the window (channel
+    // close => `recv` returns None => fatal).
     if let Some(local) = manifest::load_local(&install_dir) {
         set_state(&state, UiState::OfflineAvailable);
         match user_rx.recv().await {
             Some(UserAction::Offline) => Ok(AttemptOutcome::Succeeded(
                 FlowOutcome::UserRequestedOffline(local.launcher_executable),
             )),
-            Some(UserAction::Retry) => Ok(AttemptOutcome::UserRetry),
             None => Err(UpdaterError::NotFound(
                 "UI action channel closed before user decision".to_string(),
             )),
@@ -443,12 +409,11 @@ async fn park_on_download_failure(
     cfg: &RunUpdateFlowConfig,
     original_err: UpdaterError,
 ) -> Result<AttemptOutcome> {
-    log::warn!("release processing failed: {original_err}; offering Retry / Offline");
+    log::warn!("release processing failed: {original_err}; offering Offline");
     let local = manifest::load_local(&install_dir);
     let has_offline = local.is_some();
     set_state(&state, UiState::DownloadFailed { has_offline });
     match user_rx.recv().await {
-        Some(UserAction::Retry) => Ok(AttemptOutcome::UserRetry),
         Some(UserAction::Offline) => {
             if let Some(local) = local {
                 Ok(AttemptOutcome::Succeeded(FlowOutcome::UserRequestedOffline(
@@ -866,14 +831,14 @@ mod tests {
     // --- UserAction / FlowOutcome enum pins (T2.11f1 review follow-up) ---
 
     #[test]
-    fn user_action_variants_are_distinct() {
-        // Regression guard: a future `#[derive(Clone)]` that drops
-        // `PartialEq` or a merge of variants would silently let the
-        // callbacks' `try_send` interchange Offline and Retry. Cheap pin.
-        assert_ne!(UserAction::Offline, UserAction::Retry);
-        // Copy + Debug: used across mpsc channel + log::warn sites.
-        let _copy: UserAction = UserAction::Offline;
-        let _ = format!("{:?}", UserAction::Retry);
+    fn user_action_carries_offline_variant() {
+        // Sanity: the `Offline` variant stays constructible + Copy +
+        // Debug so the mpsc plumbing compiles. The previous
+        // `variants_are_distinct` test lost its point when `Retry` was
+        // removed in T2.11f6 — only one variant remains.
+        let a = UserAction::Offline;
+        let _copy: UserAction = a;
+        let _ = format!("{a:?}");
     }
 
     #[test]

@@ -8,21 +8,24 @@
 //! 2. **Retry → Offline** — API fails 4× (initial + 3 retries), a local
 //!    manifest exists on disk, the UI sends `UserAction::Offline`, flow
 //!    returns `FlowOutcome::UserRequestedOffline(old_launcher_rel)`.
-//! 3. **Retry → UserAction::Retry → success** — API fails, user clicks
-//!    Retry from the offline screen, second iteration of the outer loop
-//!    hits a 200 and the flow completes with `Updated`.
-//! 4. **Retry → channel closed** — API fails, `user_tx` is dropped before
+//! 3. **Retry → channel closed** — API fails, `user_tx` is dropped before
 //!    sending any action, flow returns `Err(UpdaterError::NotFound)`.
-//! 5. **Retry-succeeds-mid-loop** — first call fails, second succeeds; the
+//! 4. **Retry-succeeds-mid-loop** — first call fails, second succeeds; the
 //!    inner retry-success arm of `handle_api_failure` completes without
 //!    parking on user action.
-//! 6. **Manifest parse error** — 200 response with malformed manifest
+//! 5. **Manifest parse error** — 200 response with malformed manifest
 //!    JSON surfaces as `Err(UpdaterError::Json)` (happy-path error
 //!    bubble tested end-to-end).
-//! 7. **404 → NotFound** — 404 on `/releases/latest` maps to
+//! 6. **404 → NotFound** — 404 on `/releases/latest` maps to
 //!    `UpdaterError::NotFound`, distinct from the 500 → `Network` path.
-//! 8. **Retry → Fatal** — API fails 4×, no local manifest, flow returns
+//! 7. **Retry → Fatal** — API fails 4×, no local manifest, flow returns
 //!    `Err(UpdaterError::Network)` and leaves `UiState::FatalError` set.
+//!
+//! (Pre-T2.11f6 the suite also had `user_retry_from_offline_screen`
+//! and `user_retry_from_download_failed` scenarios exercising an outer
+//! loop driven by `UserAction::Retry`. That enum variant was removed —
+//! the state machine auto-retries on the cooldown ladder now, so no
+//! user "Retry" click exists to test.)
 //!
 //! Time is driven by a per-test `RunUpdateFlowConfig` with
 //! `retry_interval_secs: 0` and `checking_min_ms: 0` — the flow's sleeps
@@ -355,95 +358,6 @@ async fn wait_for_state_matching<F: Fn(&UiState) -> bool>(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn user_retry_from_offline_screen_loops_back_to_success() {
-    // Covers the `UserAction::Retry` → outer-loop `continue` path: first
-    // pass hits 500s, user clicks Retry from OfflineAvailable, second
-    // pass succeeds (the mock server swaps behaviour after N requests).
-    let install_dir = tempfile::tempdir().unwrap();
-    seed_local_manifest(install_dir.path(), "launcher/old-app.jar");
-
-    let server = MockServer::start().await;
-    let file_bytes: &[u8] = b"retry-win payload";
-    let file_sha = sha256_hex(file_bytes);
-    let file_url = format!("{}/download/launcher-app.jar", server.uri());
-    let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
-
-    // First 4 calls (initial + 3 retries = handle_api_failure's whole
-    // inner loop) fail; subsequent calls succeed. `up_to_n_times` is
-    // sticky-per-mount, so wiremock falls through to the next matching
-    // mock once it's exhausted.
-    Mock::given(method("GET"))
-        .and(path(latest_release_path()))
-        .respond_with(ResponseTemplate::new(500))
-        .up_to_n_times(4)
-        .mount(&server)
-        .await;
-    let r_json = release_json("v0.1.0", &manifest_url);
-    Mock::given(method("GET"))
-        .and(path(latest_release_path()))
-        .respond_with(ResponseTemplate::new(200).set_body_string(r_json))
-        .mount(&server)
-        .await;
-
-    let m_json = manifest_json(
-        "0.1.0",
-        &[(
-            "launcher/app.jar",
-            &file_url,
-            file_bytes.len() as u64,
-            &file_sha,
-        )],
-    );
-    Mock::given(method("GET"))
-        .and(path("/download/manifest-windows.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/download/launcher-app.jar"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(file_bytes.to_vec()))
-        .mount(&server)
-        .await;
-
-    let state = Arc::new(Mutex::new(UiState::Checking));
-    let (user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
-    let state_bg = Arc::clone(&state);
-    let install_path = install_dir.path().to_path_buf();
-    let cfg = test_config(server.uri());
-
-    let flow_handle = tokio::spawn(async move {
-        run_update_flow_with_config(
-            install_path,
-            Channel::Stable,
-            OsTarget::Windows,
-            state_bg,
-            &mut user_rx,
-            cfg,
-        )
-        .await
-    });
-
-    wait_for_state_matching(
-        &state,
-        |s| matches!(s, UiState::OfflineAvailable),
-        "OfflineAvailable (first pass)",
-    )
-    .await;
-
-    // User clicks Retry → outer loop continues, this time the mock
-    // server returns 200 and the full update pipeline runs.
-    user_tx.send(UserAction::Retry).await.unwrap();
-
-    let result = flow_handle.await.unwrap();
-    match result {
-        Ok(FlowOutcome::Updated(launcher_rel)) => {
-            assert_eq!(launcher_rel.as_str(), "launcher/app.jar");
-        }
-        other => panic!("expected Updated after retry, got {other:?}"),
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn channel_closed_before_user_decision_is_notfound() {
     // Covers the `None` arm in handle_api_failure: if the UI is torn
     // down while the worker is parked in OfflineAvailable, the worker
@@ -678,99 +592,9 @@ async fn latest_404_surfaces_as_notfound_not_network() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn user_retry_from_download_failed_loops_back_to_success() {
-    // Covers `park_on_download_failure`'s Retry arm — previously
-    // untested. First pass: API 200 + manifest 200 + file 500 -> the
-    // in-flight download returns an error -> state machine parks in
-    // DownloadFailed. User clicks Retry -> outer loop restarts, this
-    // time every endpoint succeeds, flow completes with Updated.
-    let install_dir = tempfile::tempdir().unwrap();
-    seed_local_manifest(install_dir.path(), "launcher/old-app.jar");
-
-    let server = MockServer::start().await;
-    let file_bytes: &[u8] = b"retry-after-dl-fail";
-    let file_sha = sha256_hex(file_bytes);
-    let file_url = format!("{}/download/launcher-app.jar", server.uri());
-    let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
-
-    // Release + manifest always return 200.
-    let r_json = release_json("v0.1.0", &manifest_url);
-    Mock::given(method("GET"))
-        .and(path(latest_release_path()))
-        .respond_with(ResponseTemplate::new(200).set_body_string(r_json))
-        .mount(&server)
-        .await;
-    let m_json = manifest_json(
-        "0.1.0",
-        &[(
-            "launcher/app.jar",
-            &file_url,
-            file_bytes.len() as u64,
-            &file_sha,
-        )],
-    );
-    Mock::given(method("GET"))
-        .and(path("/download/manifest-windows.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
-        .mount(&server)
-        .await;
-
-    // File download fails 3× (exactly DEFAULT_MAX_ATTEMPTS inside
-    // `Downloader` — no flow retry beyond that). After the 3 hits the
-    // mock is exhausted, so the NEXT call (first attempt of the second
-    // outer-flow iteration after user's Retry click) lands on the
-    // fallthrough 200 mount below. More attempts (e.g. up_to_n_times=10)
-    // would starve the second pass and park forever.
-    Mock::given(method("GET"))
-        .and(path("/download/launcher-app.jar"))
-        .respond_with(ResponseTemplate::new(500))
-        .up_to_n_times(3)
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/download/launcher-app.jar"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(file_bytes.to_vec()))
-        .mount(&server)
-        .await;
-
-    let state = Arc::new(Mutex::new(UiState::Checking));
-    let (user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
-    let state_bg = Arc::clone(&state);
-    let install_path = install_dir.path().to_path_buf();
-    let cfg = test_config(server.uri());
-
-    let flow_handle = tokio::spawn(async move {
-        run_update_flow_with_config(
-            install_path,
-            Channel::Stable,
-            OsTarget::Windows,
-            state_bg,
-            &mut user_rx,
-            cfg,
-        )
-        .await
-    });
-
-    wait_for_state_matching(
-        &state,
-        |s| matches!(s, UiState::DownloadFailed { has_offline: true }),
-        "DownloadFailed{has_offline:true}",
-    )
-    .await;
-
-    user_tx.send(UserAction::Retry).await.unwrap();
-
-    let result = flow_handle.await.unwrap();
-    match result {
-        Ok(FlowOutcome::Updated(launcher_rel)) => {
-            assert_eq!(launcher_rel.as_str(), "launcher/app.jar");
-        }
-        other => panic!(
-            "expected Updated after Retry from DownloadFailed, got {other:?}"
-        ),
-    }
-}
+// (user_retry_from_download_failed_loops_back_to_success removed in
+// T2.11f6 — UserAction::Retry is gone. Auto-retry integration tests
+// arrive in T2.11f7.)
 
 #[tokio::test(flavor = "current_thread")]
 async fn download_failed_without_local_hides_offline_flag() {
