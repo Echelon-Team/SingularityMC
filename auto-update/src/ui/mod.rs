@@ -151,7 +151,7 @@ impl eframe::App for AutoUpdateApp {
                         }
                     });
                 }
-                UiState::DownloadFailed => {
+                UiState::DownloadFailed { has_offline } => {
                     ui.label(s.download_failed);
                     ui.horizontal(|ui| {
                         if ui.button(s.retry).clicked() {
@@ -159,10 +159,19 @@ impl eframe::App for AutoUpdateApp {
                                 cb();
                             }
                         }
-                        if ui.button(s.offline_mode).clicked() {
+                        // Offline button only when a local install is
+                        // actually available to fall back to — otherwise
+                        // clicking it drops to FatalError, which reads
+                        // as a broken UI. Fresh installs (no
+                        // local-manifest.json yet) see Retry + Close only.
+                        if *has_offline && ui.button(s.offline_mode).clicked() {
                             if let Some(cb) = &self.on_offline_mode {
                                 cb();
                             }
+                        }
+                        if ui.button(s.close).clicked() {
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
                 }

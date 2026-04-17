@@ -13,4 +13,6 @@ pub const STRINGS: &Strings = &Strings {
     offline_mode: "OFFLINE MODE",
     retry: "Retry",
     close: "Close",
+    no_offline_install:
+        "Download failed and no local install is available for offline mode.",
 };

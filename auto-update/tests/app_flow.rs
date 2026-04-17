@@ -55,12 +55,13 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// Test-tuned config: zero retry interval + zero checking floor so
 /// scenarios complete in a handful of runtime ticks rather than real
 /// 30 s sleeps. Production callers use `RunUpdateFlowConfig::default()`
-/// which keeps the 30 s × 3 spec values. `max_api_retries` is kept at
-/// 3 (the same as default) so the test exercises the same loop bounds
-/// as production.
+/// which keeps the 30 s × 3 spec values. `max_api_retries` is pinned
+/// explicitly at 3 — tests relying on `up_to_n_times(4)` (initial + 3
+/// retries) would silently break if the default changed.
 fn test_config(github_base_url: String) -> RunUpdateFlowConfig {
     RunUpdateFlowConfig::new(github_base_url)
         .with_retry_interval_secs(0)
+        .with_max_api_retries(3)
         .with_checking_min_ms(0)
 }
 
@@ -614,7 +615,7 @@ async fn manifest_parse_error_surfaces_as_download_failed_then_fatal() {
 
     wait_for_state_matching(
         &state,
-        |s| matches!(s, UiState::DownloadFailed),
+        |s| matches!(s, UiState::DownloadFailed { .. }),
         "DownloadFailed",
     )
     .await;
@@ -674,5 +675,234 @@ async fn latest_404_surfaces_as_notfound_not_network() {
     assert!(
         matches!(result, Err(UpdaterError::NotFound(_))),
         "expected NotFound on /releases/latest 404, got {result:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn user_retry_from_download_failed_loops_back_to_success() {
+    // Covers `park_on_download_failure`'s Retry arm — previously
+    // untested. First pass: API 200 + manifest 200 + file 500 -> the
+    // in-flight download returns an error -> state machine parks in
+    // DownloadFailed. User clicks Retry -> outer loop restarts, this
+    // time every endpoint succeeds, flow completes with Updated.
+    let install_dir = tempfile::tempdir().unwrap();
+    seed_local_manifest(install_dir.path(), "launcher/old-app.jar");
+
+    let server = MockServer::start().await;
+    let file_bytes: &[u8] = b"retry-after-dl-fail";
+    let file_sha = sha256_hex(file_bytes);
+    let file_url = format!("{}/download/launcher-app.jar", server.uri());
+    let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
+
+    // Release + manifest always return 200.
+    let r_json = release_json("v0.1.0", &manifest_url);
+    Mock::given(method("GET"))
+        .and(path(latest_release_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r_json))
+        .mount(&server)
+        .await;
+    let m_json = manifest_json(
+        "0.1.0",
+        &[(
+            "launcher/app.jar",
+            &file_url,
+            file_bytes.len() as u64,
+            &file_sha,
+        )],
+    );
+    Mock::given(method("GET"))
+        .and(path("/download/manifest-windows.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
+        .mount(&server)
+        .await;
+
+    // File download fails 3× (exactly DEFAULT_MAX_ATTEMPTS inside
+    // `Downloader` — no flow retry beyond that). After the 3 hits the
+    // mock is exhausted, so the NEXT call (first attempt of the second
+    // outer-flow iteration after user's Retry click) lands on the
+    // fallthrough 200 mount below. More attempts (e.g. up_to_n_times=10)
+    // would starve the second pass and park forever.
+    Mock::given(method("GET"))
+        .and(path("/download/launcher-app.jar"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/launcher-app.jar"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(file_bytes.to_vec()))
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(Mutex::new(UiState::Checking));
+    let (user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
+    let state_bg = Arc::clone(&state);
+    let install_path = install_dir.path().to_path_buf();
+    let cfg = test_config(server.uri());
+
+    let flow_handle = tokio::spawn(async move {
+        run_update_flow_with_config(
+            install_path,
+            Channel::Stable,
+            OsTarget::Windows,
+            state_bg,
+            &mut user_rx,
+            cfg,
+        )
+        .await
+    });
+
+    wait_for_state_matching(
+        &state,
+        |s| matches!(s, UiState::DownloadFailed { has_offline: true }),
+        "DownloadFailed{has_offline:true}",
+    )
+    .await;
+
+    user_tx.send(UserAction::Retry).await.unwrap();
+
+    let result = flow_handle.await.unwrap();
+    match result {
+        Ok(FlowOutcome::Updated(launcher_rel)) => {
+            assert_eq!(launcher_rel.as_str(), "launcher/app.jar");
+        }
+        other => panic!(
+            "expected Updated after Retry from DownloadFailed, got {other:?}"
+        ),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn download_failed_without_local_hides_offline_flag() {
+    // Fresh install + manifest 500 → DownloadFailed MUST carry
+    // has_offline=false so the UI hides the Offline button (no usable
+    // local install to fall back on). Pins the new `has_offline` flag
+    // contract end-to-end; a mutation flipping false→true here would
+    // re-introduce the Offline→FatalError UX bug this field was added
+    // to prevent.
+    let install_dir = tempfile::tempdir().unwrap();
+    // NO seed_local_manifest — first-install case.
+
+    let server = MockServer::start().await;
+    let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
+
+    let r_json = release_json("v0.1.0", &manifest_url);
+    Mock::given(method("GET"))
+        .and(path(latest_release_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r_json))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/manifest-windows.json"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(Mutex::new(UiState::Checking));
+    let (user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
+    let state_bg = Arc::clone(&state);
+    let install_path = install_dir.path().to_path_buf();
+    let cfg = test_config(server.uri());
+
+    let flow_handle = tokio::spawn(async move {
+        run_update_flow_with_config(
+            install_path,
+            Channel::Stable,
+            OsTarget::Windows,
+            state_bg,
+            &mut user_rx,
+            cfg,
+        )
+        .await
+    });
+
+    wait_for_state_matching(
+        &state,
+        |s| matches!(s, UiState::DownloadFailed { has_offline: false }),
+        "DownloadFailed{has_offline:false}",
+    )
+    .await;
+
+    // Close the channel to let the flow terminate cleanly.
+    drop(user_tx);
+    let result = flow_handle.await.unwrap();
+    assert!(
+        matches!(result, Err(UpdaterError::NotFound(_))),
+        "expected NotFound on channel close while parked, got {result:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn temp_dir_pre_clean_wipes_stale_content_on_entry() {
+    // Pre-existing `.tmp-update/` content from a crashed prior run
+    // must be wiped when `process_release` starts — otherwise a
+    // partial file there could masquerade as a downloaded one and
+    // every hash-verify attempt would reject it on the same byte range
+    // forever. Covers the `fs::remove_dir_all` pre-clean at
+    // `process_release`'s top.
+    let install_dir = tempfile::tempdir().unwrap();
+    // Seed stale content in .tmp-update/ BEFORE the flow runs.
+    let stale_temp = install_dir.path().join(".tmp-update");
+    std::fs::create_dir_all(&stale_temp).unwrap();
+    let stale_sentinel = stale_temp.join("leftover-from-crash.bin");
+    std::fs::write(&stale_sentinel, b"stale").unwrap();
+    assert!(stale_sentinel.exists(), "pre-condition: sentinel exists");
+
+    let server = MockServer::start().await;
+    let file_bytes: &[u8] = b"fresh payload";
+    let file_sha = sha256_hex(file_bytes);
+    let file_url = format!("{}/download/launcher-app.jar", server.uri());
+    let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/download/launcher-app.jar"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(file_bytes.to_vec()))
+        .mount(&server)
+        .await;
+    let m_json = manifest_json(
+        "0.1.0",
+        &[(
+            "launcher/app.jar",
+            &file_url,
+            file_bytes.len() as u64,
+            &file_sha,
+        )],
+    );
+    Mock::given(method("GET"))
+        .and(path("/download/manifest-windows.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
+        .mount(&server)
+        .await;
+    let r_json = release_json("v0.1.0", &manifest_url);
+    Mock::given(method("GET"))
+        .and(path(latest_release_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r_json))
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(Mutex::new(UiState::Checking));
+    let (_user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
+
+    let result = run_update_flow_with_config(
+        install_dir.path().to_path_buf(),
+        Channel::Stable,
+        OsTarget::Windows,
+        Arc::clone(&state),
+        &mut user_rx,
+        test_config(server.uri()),
+    )
+    .await;
+
+    assert!(
+        matches!(result, Ok(FlowOutcome::Updated(_))),
+        "flow must complete after pre-clean, got {result:?}"
+    );
+    // Stale sentinel must be gone (pre-clean + TempDirGuard drop both
+    // wipe .tmp-update/; either would satisfy this assertion, but the
+    // *entry* pre-clean is the mechanism keeping the flow correct if
+    // the guard ever regressed).
+    assert!(
+        !stale_sentinel.exists(),
+        "stale leftover must be removed on process_release entry"
     );
 }

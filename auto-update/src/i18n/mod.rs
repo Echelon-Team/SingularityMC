@@ -74,6 +74,12 @@ pub struct Strings {
     /// out — which reads as "the app froze" rather than "I understand,
     /// I've read the error, I'm closing it."
     pub close: &'static str,
+    /// FatalError message surfaced when the user picks "Offline mode"
+    /// but no `local-manifest.json` exists — fresh install with broken
+    /// download + no fallback. Previously this was a hardcoded English
+    /// string in `app.rs`, which is now the only user-visible copy that
+    /// would leak through the language gate.
+    pub no_offline_install: &'static str,
 }
 
 /// Resolve a stored [`LanguagePreference`] to a concrete [`Lang`].
@@ -114,13 +120,14 @@ pub fn strings(lang: Lang) -> &'static Strings {
 
 /// "Downloading update... {N}%" — formatted per language. Takes the
 /// clamped [`Percent`](crate::Percent) so callers can't accidentally
-/// pass a 0..=255 value past the UI's 0..=100 contract.
+/// pass a 0..=255 value past the UI's 0..=100 contract. Uses the
+/// `Display` impl on `Percent` so this format string stays the single
+/// source of truth for the numeric rendering.
 #[must_use]
 pub fn downloading_percent(lang: Lang, percent: crate::Percent) -> String {
-    let n = percent.as_u8();
     match lang {
-        Lang::Pl => format!("Pobieranie aktualizacji... {n}%"),
-        Lang::En => format!("Downloading update... {n}%"),
+        Lang::Pl => format!("Pobieranie aktualizacji... {percent}%"),
+        Lang::En => format!("Downloading update... {percent}%"),
     }
 }
 
@@ -208,6 +215,7 @@ mod tests {
                 offline_mode,
                 retry,
                 close,
+                no_offline_install,
             } = *strings(lang);
             for (name, v) in [
                 ("checking", checking),
@@ -220,6 +228,7 @@ mod tests {
                 ("offline_mode", offline_mode),
                 ("retry", retry),
                 ("close", close),
+                ("no_offline_install", no_offline_install),
             ] {
                 assert!(!v.is_empty(), "{lang:?}.{name} must not be empty");
             }

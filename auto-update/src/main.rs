@@ -22,9 +22,9 @@
 //!                                     via the "Zamknij" button.
 
 use singularitymc_auto_update::app::{
-    current_os_target, run_update_flow, FlowOutcome, UserAction,
+    current_os_target, run_update_flow_with_config, FlowOutcome, RunUpdateFlowConfig, UserAction,
 };
-use singularitymc_auto_update::i18n::resolve_lang;
+use singularitymc_auto_update::i18n::{resolve_lang, strings};
 use singularitymc_auto_update::ui::{states::UiState, AutoUpdateApp};
 use singularitymc_auto_update::{config, launcher, self_update};
 use std::path::PathBuf;
@@ -126,13 +126,19 @@ fn main() -> anyhow::Result<()> {
     let install_dir_bg = install_dir.clone();
     let state_bg = Arc::clone(&state_handle);
 
+    // Resolve the i18n bundle now so the state machine can surface
+    // localized FatalError messages (e.g. "no offline install")
+    // without having to plumb `Lang` through every helper.
+    let cfg = RunUpdateFlowConfig::default().with_strings(strings(lang));
+
     rt.spawn(async move {
-        let outcome = run_update_flow(
+        let outcome = run_update_flow_with_config(
             install_dir_bg.clone(),
             channel,
             os,
             Arc::clone(&state_bg),
             &mut user_rx,
+            cfg,
         )
         .await;
 
@@ -142,6 +148,19 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(FlowOutcome::UserRequestedOffline(launcher_rel)) => {
                 spawn_and_exit(&state_bg, &install_dir_bg, &launcher_rel, true).await;
+            }
+            // `FlowOutcome` is `#[non_exhaustive]` — a future variant
+            // added upstream would require either wiring here or
+            // falling into this catch-all. Logged explicitly so the
+            // runtime surface is obvious.
+            Ok(other) => {
+                log::error!("unhandled FlowOutcome variant: {other:?}");
+                singularitymc_auto_update::app::set_state(
+                    &state_bg,
+                    UiState::FatalError {
+                        message: format!("unhandled flow outcome: {other:?}"),
+                    },
+                );
             }
             Err(e) => {
                 log::error!("update flow failed: {e}");

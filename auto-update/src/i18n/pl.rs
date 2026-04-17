@@ -13,4 +13,6 @@ pub const STRINGS: &Strings = &Strings {
     offline_mode: "TRYB OFFLINE",
     retry: "Ponów",
     close: "Zamknij",
+    no_offline_install:
+        "Pobieranie nieudane, a lokalna instalacja nie jest dostępna do trybu offline.",
 };

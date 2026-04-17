@@ -14,6 +14,20 @@
 //! - `ui` — egui 8-state rendering (Task 2.10)
 //! - `app` — main state machine (Task 2.11)
 
+// Hard-gate the supported build targets. Without this, `app::current_os_target`
+// silently fell back to Linux on macOS/BSD and the flow would try to fetch
+// `manifest-linux.json` + run a Linux ELF — a silent 404 chase at best,
+// runtime crash at worst. Placing the gate at the CRATE root (not inside
+// `app`) short-circuits compilation before any of the library's re-exports
+// (`Percent`, `UpdaterError`, `Manifest`, ...) are parsed, so even a future
+// library-only consumer benefits from the guard.
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+compile_error!(
+    "singularitymc-auto-update only supports Windows and Linux targets. \
+     Add a new OsTarget variant + manifest suffix + current_os_target branch \
+     before building for other platforms."
+);
+
 pub mod app;
 pub mod config;
 pub mod downloader;

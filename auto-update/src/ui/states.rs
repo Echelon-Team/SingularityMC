@@ -35,9 +35,17 @@ pub enum UiState {
     /// Network failed AND a usable prior install exists — user can pick
     /// "offline mode" to bypass the update and launch what's on disk.
     OfflineAvailable,
-    /// Download or verify failed irrecoverably (exhausted retries).
-    /// User can retry manually or pick offline mode.
-    DownloadFailed,
+    /// Download or verify failed irrecoverably. The state machine
+    /// parks here waiting for a UI button click.
+    ///
+    /// `has_offline` drives whether the UI renders the "Offline mode"
+    /// button: true only when a local `local-manifest.json` was found
+    /// on disk, so clicking Offline will actually have a valid install
+    /// to launch. On a fresh install (first-ever auto-update, nothing
+    /// on disk), this flag is false and the UI shows only Retry + Close
+    /// — clicking Offline would otherwise drop straight into
+    /// FatalError, which reads as "the Offline button is broken".
+    DownloadFailed { has_offline: bool },
     /// Non-recoverable error (malformed manifest, write permission
     /// denied, corrupt install state). Message is pre-localized by the
     /// state machine before being set here.

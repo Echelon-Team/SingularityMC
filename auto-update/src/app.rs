@@ -33,17 +33,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-// Hard-gate the supported build targets. Without this, `current_os_target`'s
-// `cfg!(windows) else Linux` silently returned `Linux` on macOS/BSD, and
-// the flow would try to fetch `manifest-linux.json` + run a Linux ELF —
-// a silent 404 chase at best, a runtime crash at worst. Refusing to
-// compile for unsupported targets is cheaper than a user-facing bug.
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-compile_error!(
-    "singularitymc-auto-update only supports Windows and Linux targets. \
-     Add a new OsTarget variant and manifest suffix before building for other platforms."
-);
-
 /// User-initiated action surfaced by the UI when the state machine is
 /// parked waiting for a decision — emitted from the `OfflineAvailable`
 /// or `DownloadFailed` screens.
@@ -68,7 +57,12 @@ pub enum UserAction {
 /// the caller spawns the launcher normally; on `UserRequestedOffline`
 /// the caller spawns with `offline=true`. `Retry` is handled internally
 /// (the flow loops back to the top), so it never surfaces here.
+///
+/// `#[non_exhaustive]` for the same reason as [`UserAction`] — this is
+/// a public return-type axis, and future additions (`Cancelled`,
+/// `AlreadyUpToDate`, `SkippedByUser`) should be non-breaking.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum FlowOutcome {
     /// Normal update path succeeded — launcher path is the freshly
     /// installed manifest's `launcher_executable`.
@@ -171,10 +165,14 @@ pub async fn run_update_flow(
 #[non_exhaustive]
 pub struct RunUpdateFlowConfig {
     /// GitHub REST API base URL — production pins [`GITHUB_API_BASE_URL_DEFAULT`],
-    /// tests point at a `wiremock` instance. Validated on every
-    /// construction via [`RunUpdateFlowConfig::new`] / fail-fast through
-    /// `GitHubClient::with_base_url` downstream; the field stays `pub`
-    /// so tests can still build via struct-literal + `..Default::default()`.
+    /// tests point at a `wiremock` instance. Validation happens lazily
+    /// via `GitHubClient::with_base_url` on the first flow iteration;
+    /// an invalid URL surfaces as `UpdaterError::InvalidConfig` which
+    /// bubbles into `FatalError`. Fields are `pub` for reader
+    /// ergonomics, but `#[non_exhaustive]` at the struct level blocks
+    /// struct-literal construction outside the crate — external callers
+    /// must go through [`RunUpdateFlowConfig::new`] + the `with_*`
+    /// builder methods.
     pub github_base_url: String,
     /// Number of seconds to wait between API retries in the NoInternet loop.
     /// Production: 30. Tests: 0 to advance through retries in a handful of
@@ -186,6 +184,12 @@ pub struct RunUpdateFlowConfig {
     /// Floor on the "Checking..." screen duration so it doesn't flash-and-
     /// disappear on fast networks. Tests drop this to 0.
     pub checking_min_ms: u64,
+    /// Localized string bundle used for user-facing `FatalError`
+    /// messages the state machine constructs itself (e.g. the
+    /// "no offline install" error when a download fails on a fresh
+    /// install). Production main.rs resolves `Lang::Auto` / `Pl` / `En`
+    /// and passes the matching bundle here; tests take the `En` default.
+    pub strings: &'static crate::Strings,
 }
 
 impl Default for RunUpdateFlowConfig {
@@ -195,6 +199,9 @@ impl Default for RunUpdateFlowConfig {
             retry_interval_secs: RETRY_INTERVAL_SECS,
             max_api_retries: MAX_API_RETRIES,
             checking_min_ms: CHECKING_MIN_MS,
+            // Tests pick `En` — production overrides via `with_strings`
+            // after `resolve_lang()` picks the concrete bundle.
+            strings: crate::i18n::strings(crate::Lang::En),
         }
     }
 }
@@ -236,6 +243,16 @@ impl RunUpdateFlowConfig {
         self.checking_min_ms = ms;
         self
     }
+
+    /// Override the localized string bundle used for user-facing fatal
+    /// error messages. Production calls this with the bundle chosen by
+    /// `resolve_lang()`; tests that want PL error messages can override
+    /// explicitly, otherwise they inherit the `En` default.
+    #[must_use]
+    pub fn with_strings(mut self, strings: &'static crate::Strings) -> Self {
+        self.strings = strings;
+        self
+    }
 }
 
 /// Full-config entry point. Prefer [`run_update_flow`] in production —
@@ -251,31 +268,21 @@ pub async fn run_update_flow_with_config(
 ) -> Result<FlowOutcome> {
     let mut iteration: u32 = 0;
     loop {
-        // Rate-limit the outer retry loop: first attempt runs
-        // immediately, subsequent `UserAction::Retry` clicks wait an
-        // exponentially growing floor (1 s, 2 s, 4 s, ... up to 30 s).
-        // Without this, a retry from `OfflineAvailable` that hits an
-        // instantly-failing `GitHubClient::with_base_url` (e.g. TLS init
-        // error) would spin at `checking_min_ms` cadence — fast enough
-        // to flood the GitHub rate limiter in a few seconds.
+        // Rate-limit the outer retry loop against a spam-clicker facing
+        // instantly-failing startup (e.g. TLS init fails before any
+        // network call). First attempt AND first user-initiated Retry
+        // run immediately — the UX cost of a 1 s freeze after a single
+        // click is worse than the upside of throttling a single retry.
+        // From the SECOND Retry onward, wait an exponential floor
+        // (1 s, 2 s, 4 s, 8 s, 16 s — capped). See [`backoff_floor_secs`]
+        // for the table + unit tests.
         //
-        // 30 s cap aligns with the NoInternet retry interval so a spam-
-        // clicker can't out-race the inner-loop cadence. Test override
-        // via `cfg.retry_interval_secs == 0` also zeroes this floor so
-        // integration tests resolve in single-digit milliseconds.
-        if iteration > 0 {
-            let floor_secs = if cfg.retry_interval_secs == 0 {
-                0
-            } else {
-                // Exponential floor: iteration=1 -> 1 s, 2 -> 2, 3 -> 4, 4 -> 8,
-                // 5+ capped at 30 (aligns with NoInternet retry cadence).
-                let shift = iteration.min(5) - 1;
-                let raw = 1u64 << shift;
-                raw.min(30)
-            };
-            if floor_secs > 0 {
-                tokio::time::sleep(Duration::from_secs(floor_secs)).await;
-            }
+        // Test override via `cfg.retry_interval_secs == 0` zeros the
+        // floor entirely so integration tests resolve in single-digit
+        // milliseconds.
+        if iteration > 1 && cfg.retry_interval_secs > 0 {
+            let floor = backoff_floor_duration_with_jitter(iteration - 1);
+            tokio::time::sleep(floor).await;
         }
         iteration = iteration.saturating_add(1);
 
@@ -298,6 +305,7 @@ pub async fn run_update_flow_with_config(
                     os,
                     Arc::clone(&state),
                     user_rx,
+                    &cfg,
                 )
                 .await?
             }
@@ -345,8 +353,16 @@ async fn handle_api_failure(
         tokio::time::sleep(Duration::from_secs(u64::from(cfg.retry_interval_secs))).await;
         match github.latest_release(channel).await {
             Ok(release) => {
-                return process_release_or_park(install_dir, github, release, os, state, user_rx)
-                    .await;
+                return process_release_or_park(
+                    install_dir,
+                    github,
+                    release,
+                    os,
+                    state,
+                    user_rx,
+                    cfg,
+                )
+                .await;
             }
             Err(e) => log::warn!(
                 "retry {} of {} failed: {e}",
@@ -387,8 +403,11 @@ async fn handle_api_failure(
 /// download, verify, install) funnels into the `DownloadFailed` screen
 /// instead of bubbling straight to `FatalError`. Mirrors the
 /// [`handle_api_failure`] retry-pattern for the post-release half of
-/// the flow — the user gets Retry (restart outer loop) and Offline
-/// (fall back to the local manifest, if any) buttons.
+/// the flow — the user gets Retry (restart outer loop) and, when a
+/// local install exists, Offline (fall back to the local manifest)
+/// buttons. If no local install is on disk, the UI sees
+/// `DownloadFailed { has_offline: false }` and hides the Offline
+/// button entirely.
 ///
 /// Kept separate from `process_release` so the happy path and the pure
 /// side-effects (file I/O, atomic swaps) remain readable without the
@@ -400,39 +419,47 @@ async fn process_release_or_park(
     os: OsTarget,
     state: Arc<Mutex<UiState>>,
     user_rx: &mut mpsc::Receiver<UserAction>,
+    cfg: &RunUpdateFlowConfig,
 ) -> Result<AttemptOutcome> {
     match process_release(install_dir.clone(), github, release, os, Arc::clone(&state)).await {
         Ok(launcher_rel) => Ok(AttemptOutcome::Succeeded(FlowOutcome::Updated(launcher_rel))),
-        Err(e) => park_on_download_failure(install_dir, state, user_rx, e).await,
+        Err(e) => park_on_download_failure(install_dir, state, user_rx, cfg, e).await,
     }
 }
 
-/// User-facing post-error parking: set `DownloadFailed`, await a
-/// `UserAction`, dispatch into the outer loop (Retry) or offline
-/// fallback (Offline, only if a local manifest exists — otherwise the
-/// flow has no usable install to launch, so it surfaces Fatal).
+/// User-facing post-error parking: set `DownloadFailed` with the
+/// `has_offline` flag derived from whether a local-manifest exists,
+/// await a `UserAction`, and dispatch.
+///
+/// Shares the shape with [`park_on_user_action`] but the UI-state +
+/// error-message pair differs enough (DownloadFailed vs OfflineAvailable,
+/// different localized FatalError message on no-offline path) that a
+/// tighter shared helper would obscure the differences. If a third
+/// parking site appears, revisit.
 async fn park_on_download_failure(
     install_dir: PathBuf,
     state: Arc<Mutex<UiState>>,
     user_rx: &mut mpsc::Receiver<UserAction>,
+    cfg: &RunUpdateFlowConfig,
     original_err: UpdaterError,
 ) -> Result<AttemptOutcome> {
     log::warn!("release processing failed: {original_err}; offering Retry / Offline");
-    set_state(&state, UiState::DownloadFailed);
+    let local = manifest::load_local(&install_dir);
+    let has_offline = local.is_some();
+    set_state(&state, UiState::DownloadFailed { has_offline });
     match user_rx.recv().await {
         Some(UserAction::Retry) => Ok(AttemptOutcome::UserRetry),
         Some(UserAction::Offline) => {
-            if let Some(local) = manifest::load_local(&install_dir) {
+            if let Some(local) = local {
                 Ok(AttemptOutcome::Succeeded(FlowOutcome::UserRequestedOffline(
                     local.launcher_executable,
                 )))
             } else {
-                // Offline button clicked but no local install to fall
-                // back on → user can only give up. Surface as fatal with
-                // a message distinct from the underlying download error
-                // so logs separate the two failure modes.
-                let msg =
-                    "offline mode requested but no local install is available".to_string();
+                // Offline click arriving despite the UI hiding the
+                // button — bug or racy state transition. Surface as
+                // FatalError with the localized message so logs +
+                // user see a consistent story.
+                let msg = cfg.strings.no_offline_install.to_string();
                 set_state(
                     &state,
                     UiState::FatalError {
@@ -576,6 +603,47 @@ impl Drop for TempDirGuard {
     }
 }
 
+/// Outer-loop retry backoff schedule in seconds, indexed by the
+/// 1-based retry count. Values past the last index saturate — so
+/// `retry_index ≥ 5` all map to 16 s. Pure + table-driven so mutation
+/// tests can pin the exact values without fighting with wall-clock
+/// sleeps.
+///
+/// **Why this table vs. `1 << (retry_index - 1)` math:** the shift form
+/// looked like it capped at 30 but actually topped out at 16 because of
+/// the `min(5)` bound — a pre-existing bug where the doc-comment lied
+/// to readers. The table is self-documenting and unit-testable.
+#[must_use]
+pub const fn backoff_floor_secs(retry_index: u32) -> u64 {
+    const BACKOFF_STEPS_SECS: [u64; 5] = [1, 2, 4, 8, 16];
+    const LAST_IDX: usize = BACKOFF_STEPS_SECS.len() - 1;
+    if retry_index == 0 {
+        return 0;
+    }
+    // `Ord::min` isn't usable in `const fn` on stable Rust 1.95 yet; a
+    // hand-rolled `if` keeps the const-ness intact.
+    let raw_idx = retry_index as usize - 1;
+    let idx = if raw_idx > LAST_IDX { LAST_IDX } else { raw_idx };
+    BACKOFF_STEPS_SECS[idx]
+}
+
+/// Wrap [`backoff_floor_secs`] with random jitter (0..=500 ms) to
+/// prevent thundering-herd synchronization when many clients retry
+/// against a flaky GitHub API at the same time. The base is deterministic
+/// (table) for debuggability; only the jitter fraction is random.
+///
+/// Not a `const fn` because it pulls a random sample — used only from
+/// the outer-loop rate-limiter, which is already a tokio await boundary.
+fn backoff_floor_duration_with_jitter(retry_index: u32) -> Duration {
+    use rand::Rng;
+    let base_secs = backoff_floor_secs(retry_index);
+    // rand 0.9 API: `rand::rng()` replaces the 0.8 `thread_rng()`,
+    // `random_range` replaces `gen_range`. Matches the downloader's
+    // existing jitter pattern so both retry paths stay consistent.
+    let jitter_ms: u64 = rand::rng().random_range(0..500);
+    Duration::from_secs(base_secs) + Duration::from_millis(jitter_ms)
+}
+
 /// Clamped percent computation for progress updates. Extracted for tests;
 /// caller doesn't need to remember the division-by-zero guard.
 /// Returns [`Percent`] so the clamp-at-100 invariant survives into the
@@ -619,6 +687,58 @@ mod tests {
             assert_eq!(os, OsTarget::Linux);
         }
     }
+
+    // --- backoff_floor_secs ---
+
+    #[test]
+    fn backoff_floor_secs_table_pins_exact_ladder() {
+        // Regression guard + documentation: the exact retry-index →
+        // seconds mapping the outer loop uses. Any mutation that
+        // flips a step (e.g. 1→0 s, 4→3 s) trips this assert loudly.
+        assert_eq!(backoff_floor_secs(0), 0);
+        assert_eq!(backoff_floor_secs(1), 1);
+        assert_eq!(backoff_floor_secs(2), 2);
+        assert_eq!(backoff_floor_secs(3), 4);
+        assert_eq!(backoff_floor_secs(4), 8);
+        assert_eq!(backoff_floor_secs(5), 16);
+    }
+
+    #[test]
+    fn backoff_floor_secs_saturates_past_table_end() {
+        // Retry index past the last ladder entry must NOT panic (shift
+        // overflow in the old `1<<n` implementation would have) and must
+        // saturate to the last value. 1_000_000 is a stand-in for
+        // "user spam-clicking for an hour" — realistic worst case.
+        assert_eq!(backoff_floor_secs(6), 16);
+        assert_eq!(backoff_floor_secs(100), 16);
+        assert_eq!(backoff_floor_secs(1_000_000), 16);
+        assert_eq!(backoff_floor_secs(u32::MAX), 16);
+    }
+
+    #[test]
+    fn backoff_floor_duration_with_jitter_respects_base_plus_jitter_bounds() {
+        // Jitter is uniform 0..500 ms, so the returned duration is
+        // `base_secs..=base_secs + 499 ms`. Sample enough times to
+        // make the assertion stable without binding the test to a
+        // specific RNG seed.
+        for idx in 1..=5 {
+            for _ in 0..20 {
+                let d = backoff_floor_duration_with_jitter(idx);
+                let base = Duration::from_secs(backoff_floor_secs(idx));
+                let upper = base + Duration::from_millis(500);
+                assert!(
+                    d >= base,
+                    "jitter must not subtract from base: idx={idx} d={d:?} base={base:?}"
+                );
+                assert!(
+                    d < upper,
+                    "jitter must stay under +500 ms: idx={idx} d={d:?} upper={upper:?}"
+                );
+            }
+        }
+    }
+
+    // --- old_version_display ---
 
     #[test]
     fn old_version_display_none_is_fresh_install_marker() {
