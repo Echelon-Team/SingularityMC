@@ -22,6 +22,7 @@ pub mod i18n;
 pub mod launcher;
 pub mod manifest;
 pub mod self_update;
+pub mod ui;
 pub mod updater;
 pub mod util;
 
@@ -30,6 +31,7 @@ pub use downloader::Downloader;
 pub use error::{Result, UpdaterError};
 pub use i18n::{Lang, Strings};
 pub use launcher::{AutoUpdateState, CrashCounterKind};
+pub use ui::{states::UiState, AutoUpdateApp};
 pub use updater::Updater;
 // Asset intentionally NOT re-exported: external consumers reach it via
 // `release.assets` field access; adding it to the public root would widen

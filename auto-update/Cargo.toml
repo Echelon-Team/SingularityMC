@@ -80,6 +80,11 @@ env_logger = "0.11"
 # OS-specific directory lookups (AppData on Windows, ~/.config on Linux).
 dirs = "6"
 
+# Cross-platform URL opener for the "Help" button (opens Discord invite in
+# default browser). Tiny crate, single-purpose. Picks ShellExecute on
+# Windows, xdg-open/open on Linux/macOS.
+open = "5"
+
 # Atomic file write primitive shared by config.rs + updater.rs + self_update.rs.
 # On Windows uses MoveFileExW with MOVEFILE_WRITE_THROUGH + MOVEFILE_REPLACE_EXISTING,
 # which std::fs::rename does NOT set — without it the directory-entry update is
