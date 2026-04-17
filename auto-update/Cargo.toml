@@ -80,12 +80,20 @@ env_logger = "0.11"
 # OS-specific directory lookups (AppData on Windows, ~/.config on Linux).
 dirs = "6"
 
+# Atomic file write primitive shared by config.rs + updater.rs + self_update.rs.
+# On Windows uses MoveFileExW with MOVEFILE_WRITE_THROUGH + MOVEFILE_REPLACE_EXISTING,
+# which std::fs::rename does NOT set — without it the directory-entry update is
+# itself buffered and a crash between rename-return and actual disk commit can
+# lose the swap even after sync_all(). Also retries on ERROR_SHARING_VIOLATION
+# (transient AV scanner locks on freshly-written files).
+atomicwrites = "0.4"
+
 [dev-dependencies]
-# Kept deliberately small for Task 2.1 — tests/smoke.rs only needs Cargo's
-# CARGO_BIN_EXE_<name> env var which is always available in integration tests.
-# Subsequent tasks will add: mockito/wiremock (HTTP mocking), tempfile
-# (filesystem isolation), tokio-test (async assertions), assert_cmd + predicates
-# (CLI integration).
+# tempfile — filesystem isolation for config / manifest / downloader / updater
+# module tests. Each test gets a throw-away directory that self-deletes on drop.
+tempfile = "3"
+# Subsequent tasks will add: mockito/wiremock (HTTP mocking for Task 2.4+),
+# tokio-test (async runtime assertions), assert_cmd + predicates (CLI integration).
 
 [profile.release]
 # Optimize binary size + startup time — we ship this to every user.

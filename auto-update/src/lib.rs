@@ -14,8 +14,10 @@
 //! - `ui` — egui 8-state rendering (Task 2.10)
 //! - `app` — main state machine (Task 2.11)
 
+pub mod config;
 pub mod error;
 
+pub use config::{AutoUpdateConfig, Channel, LanguagePreference};
 pub use error::{Result, UpdaterError};
 
 /// Build-time version string, emitted by `build.rs` from `git describe --tags
