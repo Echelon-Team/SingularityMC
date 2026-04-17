@@ -18,6 +18,7 @@ pub mod config;
 pub mod downloader;
 pub mod error;
 pub mod github_api;
+pub mod i18n;
 pub mod launcher;
 pub mod manifest;
 pub mod self_update;
@@ -27,6 +28,7 @@ pub mod util;
 pub use config::{AutoUpdateConfig, Channel, LanguagePreference};
 pub use downloader::Downloader;
 pub use error::{Result, UpdaterError};
+pub use i18n::{Lang, Strings};
 pub use launcher::{AutoUpdateState, CrashCounterKind};
 pub use updater::Updater;
 // Asset intentionally NOT re-exported: external consumers reach it via
