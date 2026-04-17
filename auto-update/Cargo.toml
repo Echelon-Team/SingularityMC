@@ -114,8 +114,12 @@ tempfile = "3"
 # support — our reqwest client uses tokio and mockito's async-only via feature
 # flags is less ergonomic. Source: https://crates.io/crates/wiremock
 wiremock = "0.6"
-# tokio with "rt" feature so #[tokio::test] works. Already have tokio in
-# runtime deps with "rt-multi-thread"; macros are in that feature list too.
+# tokio with "test-util" feature enables `tokio::time::{pause, advance}` +
+# `#[tokio::test(start_paused = true)]`. Runtime-deps tokio pulls the
+# non-test feature set; adding it here (merged by cargo) unlocks the clock
+# control integration tests under `tests/` rely on — without it, the retry
+# scenarios would wait real 90 s of 30 s × 3 sleeps per test run.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 # Optimize binary size + startup time — we ship this to every user.

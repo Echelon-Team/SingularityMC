@@ -65,6 +65,13 @@ pub enum FlowOutcome {
 pub const REPO_OWNER: &str = "Echelon-Team";
 pub const REPO_NAME: &str = "SingularityMC";
 
+/// Default GitHub Releases API base URL used by production callers of
+/// [`run_update_flow`]. Tests (`tests/app_flow.rs`) route the flow
+/// through [`run_update_flow_with_base_url`] pointing at a `wiremock`
+/// instance — the parameter is a `&str` rather than a compile-time
+/// feature flag so the test crate doesn't need a cfg-gated build.
+pub const GITHUB_API_BASE_URL_DEFAULT: &str = "https://api.github.com";
+
 /// Minimum time to show the initial "Checking..." screen — prevents
 /// flicker on fast connections where GitHub returns in <50ms.
 const CHECKING_MIN_MS: u64 = 500;
@@ -117,6 +124,62 @@ pub async fn run_update_flow(
     state: Arc<Mutex<UiState>>,
     user_rx: &mut mpsc::Receiver<UserAction>,
 ) -> Result<FlowOutcome> {
+    run_update_flow_with_config(
+        install_dir,
+        channel,
+        os,
+        state,
+        user_rx,
+        RunUpdateFlowConfig::default(),
+    )
+    .await
+}
+
+/// Knobs the production flow hardcodes, broken out as a struct so tests
+/// (`tests/app_flow.rs`) can dial down `retry_interval_secs` and
+/// `checking_min_ms` to keep paused-time scenarios deterministic. Callers
+/// should use `RunUpdateFlowConfig::default()` in production and mutate
+/// only the retry timing in tests — not the URL, which is the whole
+/// point of the wiremock seam.
+#[derive(Debug, Clone)]
+pub struct RunUpdateFlowConfig {
+    /// GitHub REST API base URL — production pins [`GITHUB_API_BASE_URL_DEFAULT`],
+    /// tests point at a `wiremock` instance.
+    pub github_base_url: String,
+    /// Number of seconds to wait between API retries in the NoInternet loop.
+    /// Production: 30. Tests: 0 to advance through retries in a handful of
+    /// `tokio::time::advance` calls without wiremock I/O stalling.
+    pub retry_interval_secs: u32,
+    /// How many retries to attempt before giving up and surfacing
+    /// OfflineAvailable / FatalError.
+    pub max_api_retries: u32,
+    /// Floor on the "Checking..." screen duration so it doesn't flash-and-
+    /// disappear on fast networks. Tests drop this to 0.
+    pub checking_min_ms: u64,
+}
+
+impl Default for RunUpdateFlowConfig {
+    fn default() -> Self {
+        Self {
+            github_base_url: GITHUB_API_BASE_URL_DEFAULT.to_string(),
+            retry_interval_secs: RETRY_INTERVAL_SECS,
+            max_api_retries: MAX_API_RETRIES,
+            checking_min_ms: CHECKING_MIN_MS,
+        }
+    }
+}
+
+/// Full-config entry point. Prefer [`run_update_flow`] in production —
+/// this one exists so integration tests can swap the retry-timing knobs
+/// without plumbing every constant through layer by layer.
+pub async fn run_update_flow_with_config(
+    install_dir: PathBuf,
+    channel: Channel,
+    os: OsTarget,
+    state: Arc<Mutex<UiState>>,
+    user_rx: &mut mpsc::Receiver<UserAction>,
+    cfg: RunUpdateFlowConfig,
+) -> Result<FlowOutcome> {
     loop {
         // Reset to Checking on every iteration — a retry from the offline
         // screen needs to visually re-enter the flow from the top.
@@ -124,9 +187,10 @@ pub async fn run_update_flow(
 
         // Guarantee the "Checking..." screen is visible for long enough
         // to register — prevents flash-then-gone on fast networks.
-        tokio::time::sleep(Duration::from_millis(CHECKING_MIN_MS)).await;
+        tokio::time::sleep(Duration::from_millis(cfg.checking_min_ms)).await;
 
-        let github = GitHubClient::new(REPO_OWNER, REPO_NAME)?;
+        let github =
+            GitHubClient::with_base_url(&cfg.github_base_url, REPO_OWNER, REPO_NAME)?;
         let attempt = match github.latest_release(channel).await {
             Ok(release) => {
                 let launcher_rel =
@@ -142,6 +206,7 @@ pub async fn run_update_flow(
                     os,
                     Arc::clone(&state),
                     user_rx,
+                    &cfg,
                     e,
                 )
                 .await?
@@ -162,25 +227,30 @@ async fn handle_api_failure(
     os: OsTarget,
     state: Arc<Mutex<UiState>>,
     user_rx: &mut mpsc::Receiver<UserAction>,
+    cfg: &RunUpdateFlowConfig,
     original_err: UpdaterError,
 ) -> Result<AttemptOutcome> {
     log::warn!("GitHub API failed: {original_err}; entering retry loop");
 
-    for attempt in 0..MAX_API_RETRIES {
+    for attempt in 0..cfg.max_api_retries {
         set_state(
             &state,
             UiState::NoInternet {
-                retry_in_seconds: RETRY_INTERVAL_SECS,
+                retry_in_seconds: cfg.retry_interval_secs,
             },
         );
-        tokio::time::sleep(Duration::from_secs(u64::from(RETRY_INTERVAL_SECS))).await;
+        tokio::time::sleep(Duration::from_secs(u64::from(cfg.retry_interval_secs))).await;
         match github.latest_release(channel).await {
             Ok(release) => {
                 let launcher_rel =
                     process_release(install_dir, github, release, os, state).await?;
                 return Ok(AttemptOutcome::Succeeded(FlowOutcome::Updated(launcher_rel)));
             }
-            Err(e) => log::warn!("retry {} of {MAX_API_RETRIES} failed: {e}", attempt + 1),
+            Err(e) => log::warn!(
+                "retry {} of {} failed: {e}",
+                attempt + 1,
+                cfg.max_api_retries
+            ),
         }
     }
 
@@ -383,5 +453,51 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(matches!(*guard, UiState::Installing));
+    }
+
+    // --- UserAction / FlowOutcome enum pins (T2.11f1 review follow-up) ---
+
+    #[test]
+    fn user_action_variants_are_distinct() {
+        // Regression guard: a future `#[derive(Clone)]` that drops
+        // `PartialEq` or a merge of variants would silently let the
+        // callbacks' `try_send` interchange Offline and Retry. Cheap pin.
+        assert_ne!(UserAction::Offline, UserAction::Retry);
+        // Copy + Debug: used across mpsc channel + log::warn sites.
+        let _copy: UserAction = UserAction::Offline;
+        let _ = format!("{:?}", UserAction::Retry);
+    }
+
+    #[test]
+    fn flow_outcome_variants_carry_manifest_path() {
+        // Pin that the caller-observable success axes both expose the
+        // launcher path — main.rs matches on `path.as_str()` to build
+        // the subprocess command line.
+        let p = crate::ManifestPath::parse("launcher/app.jar").unwrap();
+        match FlowOutcome::Updated(p.clone()) {
+            FlowOutcome::Updated(x) => assert_eq!(x.as_str(), "launcher/app.jar"),
+            FlowOutcome::UserRequestedOffline(_) => unreachable!(),
+        }
+        match FlowOutcome::UserRequestedOffline(p.clone()) {
+            FlowOutcome::UserRequestedOffline(x) => {
+                assert_eq!(x.as_str(), "launcher/app.jar");
+            }
+            FlowOutcome::Updated(_) => unreachable!(),
+        }
+    }
+
+    // --- RunUpdateFlowConfig defaults ---
+
+    #[test]
+    fn run_update_flow_config_default_matches_spec_constants() {
+        // `RunUpdateFlowConfig::default()` is what production
+        // `run_update_flow` passes through — pins that any future edit
+        // to the `Default` impl surfaces as a test diff, preventing
+        // silent drift of the spec 4.x retry cadence (30 s × 3).
+        let cfg = RunUpdateFlowConfig::default();
+        assert_eq!(cfg.github_base_url, GITHUB_API_BASE_URL_DEFAULT);
+        assert_eq!(cfg.retry_interval_secs, RETRY_INTERVAL_SECS);
+        assert_eq!(cfg.max_api_retries, MAX_API_RETRIES);
+        assert_eq!(cfg.checking_min_ms, CHECKING_MIN_MS);
     }
 }
