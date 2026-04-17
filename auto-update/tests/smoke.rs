@@ -14,7 +14,12 @@ const BIN: &str = env!("CARGO_BIN_EXE_singularitymc-auto-update");
 
 #[test]
 fn prints_version_line() {
+    // `--version` short-circuits before any GUI/runtime bootstrap (see
+    // main.rs); without this flag the binary would open its eframe window
+    // and block until the user closes it — fine for real use, fatal for
+    // `cargo test` in CI or on a headless dev box.
     let output = Command::new(BIN)
+        .arg("--version")
         .output()
         .expect("failed to execute auto-update binary");
 

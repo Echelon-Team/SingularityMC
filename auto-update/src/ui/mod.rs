@@ -184,30 +184,6 @@ impl eframe::App for AutoUpdateApp {
     }
 }
 
-/// Open the spec-declared Discord help URL in the user's default browser.
-/// Failure is logged (no UI fallback) — the Help button is already a
-/// last-resort surface, and most browser-open failures (corp policy,
-/// registry rot) are unrecoverable from inside our process.
-fn open_help_url() {
-    if let Err(e) = open::that(i18n::DISCORD_URL) {
-        log::warn!(
-            "failed to open Discord help URL {}: {e}",
-            i18n::DISCORD_URL
-        );
-    }
-}
-
-/// Invoke a stored callback, or log-warn if the caller never installed
-/// one (Task 2.11 bug surface: UI button rendered without a handler).
-fn fire_callback(cb: &Option<Callback>, name: &str) {
-    match cb {
-        Some(f) => f(),
-        None => log::warn!(
-            "UI callback '{name}' clicked but no handler installed — Task 2.11 must wire this"
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

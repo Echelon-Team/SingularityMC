@@ -14,6 +14,7 @@
 //! - `ui` — egui 8-state rendering (Task 2.10)
 //! - `app` — main state machine (Task 2.11)
 
+pub mod app;
 pub mod config;
 pub mod downloader;
 pub mod error;
