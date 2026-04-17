@@ -22,10 +22,9 @@
 //! semantics (the SMB redirector can ACK FlushFileBuffers before the server
 //! has committed to platter). Network installs are an unsupported configuration.
 
-use crate::{Result, UpdaterError};
-use atomicwrites::{AtomicFile, OverwriteBehavior};
+use crate::{util, Result};
 use serde::{Deserialize, Serialize};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Release channel the launcher follows. Stable is the default; Beta is an
@@ -108,31 +107,18 @@ pub fn load(install_dir: &Path) -> AutoUpdateConfig {
 /// issues, `Json` for (extremely unlikely) serialization failure.
 pub fn save(install_dir: &Path, config: &AutoUpdateConfig) -> Result<()> {
     let path = config_path(install_dir);
-    // `path` came from `install_dir.join("auto-update-config.json")`, so
-    // `path.parent()` is always `Some(install_dir)` per `Path::join` contract.
     let parent = path
         .parent()
         .expect("config_path always has a parent dir by construction");
     std::fs::create_dir_all(parent)?;
-
     let content = serde_json::to_string_pretty(config)?;
-
-    // atomicwrites handles: tmp file creation, fsync, MoveFileExW with
-    // WRITE_THROUGH+REPLACE_EXISTING on Windows, sharing-violation retry,
-    // and cleanup of the tmp file on any error path.
-    AtomicFile::new(&path, OverwriteBehavior::AllowOverwrite)
-        .write(|f| f.write_all(content.as_bytes()))
-        .map_err(|e| match e {
-            atomicwrites::Error::Internal(err) | atomicwrites::Error::User(err) => {
-                UpdaterError::Io(err)
-            }
-        })?;
-    Ok(())
+    util::atomic_write_bytes(&path, content.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::UpdaterError;
     use tempfile::TempDir;
 
     #[test]
