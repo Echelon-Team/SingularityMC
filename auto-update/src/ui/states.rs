@@ -15,12 +15,11 @@ pub enum UiState {
     Checking,
     /// Active download with progress tracking. Bytes are the source of
     /// truth (integer, no precision drift); MB conversion happens at
-    /// render time in the UI layer.
+    /// render time in the UI layer. `percent` is the clamped `Percent`
+    /// newtype — the struct can't be constructed with an out-of-range
+    /// value, so the UI layer renders it verbatim.
     Downloading {
-        /// 0..=100, clamped by caller. Not validated at struct level so
-        /// out-of-range values render as a visible glitch the state
-        /// machine will catch rather than silently rounding.
-        percent: u8,
+        percent: crate::Percent,
         downloaded_bytes: u64,
         total_bytes: u64,
     },
@@ -55,7 +54,7 @@ mod tests {
         // under a Mutex lock and release before rendering. Regression
         // guard — adding a !Clone field would break the render loop.
         let s = UiState::Downloading {
-            percent: 42,
+            percent: crate::Percent::new(42),
             downloaded_bytes: 10 * 1_048_576,
             total_bytes: 25 * 1_048_576,
         };
@@ -65,7 +64,7 @@ mod tests {
     #[test]
     fn downloading_carries_progress_data() {
         let s = UiState::Downloading {
-            percent: 75,
+            percent: crate::Percent::new(75),
             downloaded_bytes: 7_500_000,
             total_bytes: 10_000_000,
         };
@@ -75,7 +74,7 @@ mod tests {
                 downloaded_bytes,
                 total_bytes,
             } => {
-                assert_eq!(percent, 75);
+                assert_eq!(percent.as_u8(), 75);
                 assert_eq!(downloaded_bytes, 7_500_000);
                 assert_eq!(total_bytes, 10_000_000);
             }

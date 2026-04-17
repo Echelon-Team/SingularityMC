@@ -112,12 +112,15 @@ pub fn strings(lang: Lang) -> &'static Strings {
     }
 }
 
-/// "Downloading update... {N}%" — formatted per language.
+/// "Downloading update... {N}%" — formatted per language. Takes the
+/// clamped [`Percent`](crate::Percent) so callers can't accidentally
+/// pass a 0..=255 value past the UI's 0..=100 contract.
 #[must_use]
-pub fn downloading_percent(lang: Lang, percent: u8) -> String {
+pub fn downloading_percent(lang: Lang, percent: crate::Percent) -> String {
+    let n = percent.as_u8();
     match lang {
-        Lang::Pl => format!("Pobieranie aktualizacji... {percent}%"),
-        Lang::En => format!("Downloading update... {percent}%"),
+        Lang::Pl => format!("Pobieranie aktualizacji... {n}%"),
+        Lang::En => format!("Downloading update... {n}%"),
     }
 }
 
@@ -186,19 +189,37 @@ mod tests {
 
     #[test]
     fn all_static_slots_are_non_empty_in_both_bundles() {
+        // Destructure (`let Strings { ... } = *s`) instead of indexing
+        // fields one-by-one — rustc then errors on a missing pattern
+        // element if a new `&'static str` slot lands in `Strings`. The
+        // previous tuple-iteration version silently skipped new fields,
+        // letting an empty translation slip into a release. `Strings` is
+        // explicitly NOT `#[non_exhaustive]` so this destructure stays
+        // exhaustive inside the crate.
         for lang in [Lang::Pl, Lang::En] {
-            let s = strings(lang);
+            let Strings {
+                checking,
+                verifying,
+                installing,
+                starting,
+                no_internet,
+                download_failed,
+                help,
+                offline_mode,
+                retry,
+                close,
+            } = *strings(lang);
             for (name, v) in [
-                ("checking", s.checking),
-                ("verifying", s.verifying),
-                ("installing", s.installing),
-                ("starting", s.starting),
-                ("no_internet", s.no_internet),
-                ("download_failed", s.download_failed),
-                ("help", s.help),
-                ("offline_mode", s.offline_mode),
-                ("retry", s.retry),
-                ("close", s.close),
+                ("checking", checking),
+                ("verifying", verifying),
+                ("installing", installing),
+                ("starting", starting),
+                ("no_internet", no_internet),
+                ("download_failed", download_failed),
+                ("help", help),
+                ("offline_mode", offline_mode),
+                ("retry", retry),
+                ("close", close),
             ] {
                 assert!(!v.is_empty(), "{lang:?}.{name} must not be empty");
             }
@@ -218,13 +239,13 @@ mod tests {
 
     #[test]
     fn downloading_percent_formats_pl() {
-        let s = downloading_percent(Lang::Pl, 42);
+        let s = downloading_percent(Lang::Pl, crate::Percent::new(42));
         assert_eq!(s, "Pobieranie aktualizacji... 42%");
     }
 
     #[test]
     fn downloading_percent_formats_en() {
-        let s = downloading_percent(Lang::En, 42);
+        let s = downloading_percent(Lang::En, crate::Percent::new(42));
         assert_eq!(s, "Downloading update... 42%");
     }
 
@@ -232,10 +253,10 @@ mod tests {
     fn downloading_percent_handles_bounds() {
         // 0 and 100 are legitimate UI states (download just started /
         // just finished). Neither should format weirdly.
-        assert!(downloading_percent(Lang::Pl, 0).contains("0%"));
-        assert!(downloading_percent(Lang::Pl, 100).contains("100%"));
-        assert!(downloading_percent(Lang::En, 0).contains("0%"));
-        assert!(downloading_percent(Lang::En, 100).contains("100%"));
+        assert!(downloading_percent(Lang::Pl, crate::Percent::new(0)).contains("0%"));
+        assert!(downloading_percent(Lang::Pl, crate::Percent::new(100)).contains("100%"));
+        assert!(downloading_percent(Lang::En, crate::Percent::new(0)).contains("0%"));
+        assert!(downloading_percent(Lang::En, crate::Percent::new(100)).contains("100%"));
     }
 
     #[test]

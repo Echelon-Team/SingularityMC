@@ -82,10 +82,15 @@ impl<'a> Updater<'a> {
     /// failures, [`UpdaterError::SwapFailed`] wraps both the original
     /// error and the list of rollback failures so the caller (Task 2.11)
     /// can distinguish recoverable from unrecoverable outcomes.
+    /// Swap downloaded files into `install_dir`, backing up any existing
+    /// copies under `File-Backups/pre-update-v<old>-<ts>/`. Pass `None`
+    /// for `old_version` on a first-run/clean install — the snapshot
+    /// directory is then labelled `pre-update-fresh-<ts>/`, which avoids
+    /// a misleading `"0.0.0"` sentinel in the folder name.
     pub fn swap_files(
         &self,
         downloads: &[(FileEntry, PathBuf)],
-        old_version: &Version,
+        old_version: Option<&Version>,
     ) -> Result<()> {
         if downloads.is_empty() {
             return Ok(());
@@ -132,12 +137,21 @@ impl<'a> Updater<'a> {
     /// collisions (repeated updates from the same old version) are
     /// avoided — AND so lexicographic sort gives reliable
     /// newest-to-oldest ordering across filesystems.
-    fn snapshot_dir_name(old_version: &Version) -> String {
+    ///
+    /// `None` produces `pre-update-fresh-<ts>/` (first-run install with
+    /// nothing on disk to back up). That branch is dead weight for the
+    /// rollback path — no pre-existing files are ever found, so nothing
+    /// gets copied into the backup — but keeping the directory around
+    /// gives log readers a single consistent "what happened" marker.
+    fn snapshot_dir_name(old_version: Option<&Version>) -> String {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        format!("pre-update-v{old_version}-{ts}")
+        match old_version {
+            Some(v) => format!("pre-update-v{v}-{ts}"),
+            None => format!("pre-update-fresh-{ts}"),
+        }
     }
 
     fn do_swap(
@@ -347,7 +361,7 @@ mod tests {
         Updater::new(install.path())
             .swap_files(
                 &[(file_entry("launcher/a.jar"), new_tmp)],
-                &Version::parse("1.0.0").unwrap(),
+                Some(&Version::parse("1.0.0").unwrap()),
             )
             .unwrap();
 
@@ -376,7 +390,7 @@ mod tests {
         Updater::new(install.path())
             .swap_files(
                 &[(file_entry("launcher/b.jar"), new_tmp)],
-                &Version::parse("1.0.0").unwrap(),
+                Some(&Version::parse("1.0.0").unwrap()),
             )
             .unwrap();
 
@@ -392,7 +406,7 @@ mod tests {
     fn swap_files_empty_downloads_is_no_op() {
         let install = TempDir::new().unwrap();
         Updater::new(install.path())
-            .swap_files(&[], &Version::parse("1.0.0").unwrap())
+            .swap_files(&[], Some(&Version::parse("1.0.0").unwrap()))
             .unwrap();
         // No backup dir created for a no-op swap.
         assert!(!install.path().join("File-Backups").exists());
@@ -415,7 +429,7 @@ mod tests {
                 (file_entry("launcher/a.jar"), a_new),
                 (file_entry("launcher/b.jar"), b_nonexistent),
             ],
-            &Version::parse("1.0.0").unwrap(),
+            Some(&Version::parse("1.0.0").unwrap()),
         );
         assert!(result.is_err());
         // Clean rollback → original error surfaces, NOT SwapFailed.
@@ -441,7 +455,7 @@ mod tests {
                 (file_entry("launcher/a.jar"), a_new),
                 (file_entry("launcher/b.jar"), b_nonexistent),
             ],
-            &Version::parse("1.0.0").unwrap(),
+            Some(&Version::parse("1.0.0").unwrap()),
         );
         assert!(!install.path().join("launcher/a.jar").exists());
     }
@@ -463,7 +477,7 @@ mod tests {
         let a_new = tmp_file(&tmp, "a.jar", b"NEW");
         let result = Updater::new(install.path()).swap_files(
             &[(file_entry("launcher/a.jar"), a_new)],
-            &Version::parse("1.0.0").unwrap(),
+            Some(&Version::parse("1.0.0").unwrap()),
         );
         assert!(matches!(result, Err(UpdaterError::Io(_))));
         // Original file untouched (swap never started).
@@ -575,9 +589,21 @@ mod tests {
     #[test]
     fn snapshot_dir_name_embeds_version_and_timestamp() {
         let v = Version::parse("1.2.3").unwrap();
-        let name = Updater::snapshot_dir_name(&v);
+        let name = Updater::snapshot_dir_name(Some(&v));
         assert!(name.starts_with("pre-update-v1.2.3-"));
         // Suffix after "v1.2.3-" is a unix-seconds number; parse to verify.
+        let ts_str = name.rsplit('-').next().unwrap();
+        assert!(ts_str.parse::<u64>().is_ok());
+    }
+
+    #[test]
+    fn snapshot_dir_name_uses_fresh_marker_for_none() {
+        // Replaces the old "0.0.0" sentinel: first-run installs produce
+        // `pre-update-fresh-<ts>/` in the backup directory, which is
+        // unambiguous in log output and leaves the semver namespace
+        // untouched by the sentinel.
+        let name = Updater::snapshot_dir_name(None);
+        assert!(name.starts_with("pre-update-fresh-"));
         let ts_str = name.rsplit('-').next().unwrap();
         assert!(ts_str.parse::<u64>().is_ok());
     }

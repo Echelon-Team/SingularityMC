@@ -33,11 +33,28 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+// Hard-gate the supported build targets. Without this, `current_os_target`'s
+// `cfg!(windows) else Linux` silently returned `Linux` on macOS/BSD, and
+// the flow would try to fetch `manifest-linux.json` + run a Linux ELF —
+// a silent 404 chase at best, a runtime crash at worst. Refusing to
+// compile for unsupported targets is cheaper than a user-facing bug.
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+compile_error!(
+    "singularitymc-auto-update only supports Windows and Linux targets. \
+     Add a new OsTarget variant and manifest suffix before building for other platforms."
+);
+
 /// User-initiated action surfaced by the UI when the state machine is
-/// parked waiting for a decision (currently in `OfflineAvailable` or
-/// `DownloadFailed`). Variants are exhaustive by design — adding one
-/// forces every match site to handle it.
+/// parked waiting for a decision — emitted from the `OfflineAvailable`
+/// or `DownloadFailed` screens.
+///
+/// `#[non_exhaustive]` because this is part of the crate's public surface
+/// (UI ↔ state machine contract) — adding a future variant (e.g.
+/// `QuitNow`, `SkipUpdate`) would otherwise be a breaking change.
+/// Internal match sites in this crate still need to be exhaustive;
+/// `non_exhaustive` only affects external consumers.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum UserAction {
     /// Click on the "Offline mode" button — caller should spawn the
     /// launcher with `--offline` from the last known-good install.
@@ -67,9 +84,10 @@ pub const REPO_NAME: &str = "SingularityMC";
 
 /// Default GitHub Releases API base URL used by production callers of
 /// [`run_update_flow`]. Tests (`tests/app_flow.rs`) route the flow
-/// through [`run_update_flow_with_base_url`] pointing at a `wiremock`
-/// instance — the parameter is a `&str` rather than a compile-time
-/// feature flag so the test crate doesn't need a cfg-gated build.
+/// through [`run_update_flow_with_config`] with a `RunUpdateFlowConfig`
+/// pointing at a `wiremock` instance — the knob is a runtime field
+/// rather than a compile-time feature flag so the test crate doesn't
+/// need a cfg-gated build.
 pub const GITHUB_API_BASE_URL_DEFAULT: &str = "https://api.github.com";
 
 /// Minimum time to show the initial "Checking..." screen — prevents
@@ -83,23 +101,27 @@ const RETRY_INTERVAL_SECS: u32 = 30;
 const MAX_API_RETRIES: u32 = 3;
 
 /// Detect the current platform's OS target for manifest selection.
-/// Currently supports Windows + Linux per spec; any other target
-/// defaults to Linux (least-surprise for BSD/macOS dev boxes).
+/// Unsupported targets are rejected at compile time by the `compile_error!`
+/// gate at the top of this module, so the runtime `if/else` is total over
+/// the gate's accepted set.
 #[must_use]
 pub fn current_os_target() -> OsTarget {
-    if cfg!(windows) {
+    if cfg!(target_os = "windows") {
         OsTarget::Windows
     } else {
         OsTarget::Linux
     }
 }
 
-/// Version placeholder for fresh installs (no prior `local-manifest.json`).
-/// Used purely for backup dir naming — `"0.0.0"` makes log lines like
-/// `updating 0.0.0 -> 0.1.0` instantly readable as a fresh install.
-#[must_use]
-pub fn fresh_install_version() -> Version {
-    Version::parse("0.0.0").expect("0.0.0 is a valid non-empty version")
+/// Human-readable rendering of the current install's prior version for
+/// log lines. `None` (fresh install) formats as `"(fresh install)"` —
+/// no `"0.0.0"` sentinel leaking into prose or into the `Version`
+/// semver namespace. Display-only; don't compare.
+fn old_version_display(old_version: Option<&Version>) -> String {
+    match old_version {
+        Some(v) => v.to_string(),
+        None => "(fresh install)".to_string(),
+    }
 }
 
 /// Internal outcome of a single `run_update_flow` attempt before the
@@ -137,18 +159,26 @@ pub async fn run_update_flow(
 
 /// Knobs the production flow hardcodes, broken out as a struct so tests
 /// (`tests/app_flow.rs`) can dial down `retry_interval_secs` and
-/// `checking_min_ms` to keep paused-time scenarios deterministic. Callers
-/// should use `RunUpdateFlowConfig::default()` in production and mutate
-/// only the retry timing in tests — not the URL, which is the whole
-/// point of the wiremock seam.
+/// `checking_min_ms` to keep scenarios deterministic without waiting on
+/// real 30 s sleeps. Callers should use `RunUpdateFlowConfig::default()`
+/// in production and mutate only the retry timing in tests — not the
+/// URL, which is the whole point of the wiremock seam.
+///
+/// `#[non_exhaustive]` so adding a future knob (e.g. a `user_agent` or
+/// `max_concurrent_downloads`) is a non-breaking change for anyone
+/// constructing the struct via `RunUpdateFlowConfig { ..Default::default() }`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RunUpdateFlowConfig {
     /// GitHub REST API base URL — production pins [`GITHUB_API_BASE_URL_DEFAULT`],
-    /// tests point at a `wiremock` instance.
+    /// tests point at a `wiremock` instance. Validated on every
+    /// construction via [`RunUpdateFlowConfig::new`] / fail-fast through
+    /// `GitHubClient::with_base_url` downstream; the field stays `pub`
+    /// so tests can still build via struct-literal + `..Default::default()`.
     pub github_base_url: String,
     /// Number of seconds to wait between API retries in the NoInternet loop.
     /// Production: 30. Tests: 0 to advance through retries in a handful of
-    /// `tokio::time::advance` calls without wiremock I/O stalling.
+    /// runtime ticks.
     pub retry_interval_secs: u32,
     /// How many retries to attempt before giving up and surfacing
     /// OfflineAvailable / FatalError.
@@ -169,6 +199,45 @@ impl Default for RunUpdateFlowConfig {
     }
 }
 
+impl RunUpdateFlowConfig {
+    /// Constructor + setter-chain for tests and any future external
+    /// consumer. `#[non_exhaustive]` makes struct-literal construction
+    /// inaccessible outside this crate, so callers have to go through
+    /// this API — which is the whole point: adding a field becomes a
+    /// non-breaking change.
+    #[must_use]
+    pub fn new(github_base_url: impl Into<String>) -> Self {
+        Self {
+            github_base_url: github_base_url.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Override the API retry interval. Production uses 30 s (via
+    /// `Default`); tests call with `0` to drop the sleep-between-retries
+    /// overhead without losing exercise of the sleep code path.
+    #[must_use]
+    pub fn with_retry_interval_secs(mut self, secs: u32) -> Self {
+        self.retry_interval_secs = secs;
+        self
+    }
+
+    /// Override the retry cap. Production: 3.
+    #[must_use]
+    pub fn with_max_api_retries(mut self, n: u32) -> Self {
+        self.max_api_retries = n;
+        self
+    }
+
+    /// Override the minimum `Checking...` screen duration. Tests use 0
+    /// to skip the UX-jitter guard in production.
+    #[must_use]
+    pub fn with_checking_min_ms(mut self, ms: u64) -> Self {
+        self.checking_min_ms = ms;
+        self
+    }
+}
+
 /// Full-config entry point. Prefer [`run_update_flow`] in production —
 /// this one exists so integration tests can swap the retry-timing knobs
 /// without plumbing every constant through layer by layer.
@@ -180,7 +249,36 @@ pub async fn run_update_flow_with_config(
     user_rx: &mut mpsc::Receiver<UserAction>,
     cfg: RunUpdateFlowConfig,
 ) -> Result<FlowOutcome> {
+    let mut iteration: u32 = 0;
     loop {
+        // Rate-limit the outer retry loop: first attempt runs
+        // immediately, subsequent `UserAction::Retry` clicks wait an
+        // exponentially growing floor (1 s, 2 s, 4 s, ... up to 30 s).
+        // Without this, a retry from `OfflineAvailable` that hits an
+        // instantly-failing `GitHubClient::with_base_url` (e.g. TLS init
+        // error) would spin at `checking_min_ms` cadence — fast enough
+        // to flood the GitHub rate limiter in a few seconds.
+        //
+        // 30 s cap aligns with the NoInternet retry interval so a spam-
+        // clicker can't out-race the inner-loop cadence. Test override
+        // via `cfg.retry_interval_secs == 0` also zeroes this floor so
+        // integration tests resolve in single-digit milliseconds.
+        if iteration > 0 {
+            let floor_secs = if cfg.retry_interval_secs == 0 {
+                0
+            } else {
+                // Exponential floor: iteration=1 -> 1 s, 2 -> 2, 3 -> 4, 4 -> 8,
+                // 5+ capped at 30 (aligns with NoInternet retry cadence).
+                let shift = iteration.min(5) - 1;
+                let raw = 1u64 << shift;
+                raw.min(30)
+            };
+            if floor_secs > 0 {
+                tokio::time::sleep(Duration::from_secs(floor_secs)).await;
+            }
+        }
+        iteration = iteration.saturating_add(1);
+
         // Reset to Checking on every iteration — a retry from the offline
         // screen needs to visually re-enter the flow from the top.
         set_state(&state, UiState::Checking);
@@ -193,10 +291,15 @@ pub async fn run_update_flow_with_config(
             GitHubClient::with_base_url(&cfg.github_base_url, REPO_OWNER, REPO_NAME)?;
         let attempt = match github.latest_release(channel).await {
             Ok(release) => {
-                let launcher_rel =
-                    process_release(install_dir.clone(), github, release, os, Arc::clone(&state))
-                        .await?;
-                AttemptOutcome::Succeeded(FlowOutcome::Updated(launcher_rel))
+                process_release_or_park(
+                    install_dir.clone(),
+                    github,
+                    release,
+                    os,
+                    Arc::clone(&state),
+                    user_rx,
+                )
+                .await?
             }
             Err(e) => {
                 handle_api_failure(
@@ -242,9 +345,8 @@ async fn handle_api_failure(
         tokio::time::sleep(Duration::from_secs(u64::from(cfg.retry_interval_secs))).await;
         match github.latest_release(channel).await {
             Ok(release) => {
-                let launcher_rel =
-                    process_release(install_dir, github, release, os, state).await?;
-                return Ok(AttemptOutcome::Succeeded(FlowOutcome::Updated(launcher_rel)));
+                return process_release_or_park(install_dir, github, release, os, state, user_rx)
+                    .await;
             }
             Err(e) => log::warn!(
                 "retry {} of {} failed: {e}",
@@ -281,6 +383,71 @@ async fn handle_api_failure(
     }
 }
 
+/// Wraps [`process_release`] so that any failure (manifest fetch,
+/// download, verify, install) funnels into the `DownloadFailed` screen
+/// instead of bubbling straight to `FatalError`. Mirrors the
+/// [`handle_api_failure`] retry-pattern for the post-release half of
+/// the flow — the user gets Retry (restart outer loop) and Offline
+/// (fall back to the local manifest, if any) buttons.
+///
+/// Kept separate from `process_release` so the happy path and the pure
+/// side-effects (file I/O, atomic swaps) remain readable without the
+/// error-parking control flow noise.
+async fn process_release_or_park(
+    install_dir: PathBuf,
+    github: GitHubClient,
+    release: Release,
+    os: OsTarget,
+    state: Arc<Mutex<UiState>>,
+    user_rx: &mut mpsc::Receiver<UserAction>,
+) -> Result<AttemptOutcome> {
+    match process_release(install_dir.clone(), github, release, os, Arc::clone(&state)).await {
+        Ok(launcher_rel) => Ok(AttemptOutcome::Succeeded(FlowOutcome::Updated(launcher_rel))),
+        Err(e) => park_on_download_failure(install_dir, state, user_rx, e).await,
+    }
+}
+
+/// User-facing post-error parking: set `DownloadFailed`, await a
+/// `UserAction`, dispatch into the outer loop (Retry) or offline
+/// fallback (Offline, only if a local manifest exists — otherwise the
+/// flow has no usable install to launch, so it surfaces Fatal).
+async fn park_on_download_failure(
+    install_dir: PathBuf,
+    state: Arc<Mutex<UiState>>,
+    user_rx: &mut mpsc::Receiver<UserAction>,
+    original_err: UpdaterError,
+) -> Result<AttemptOutcome> {
+    log::warn!("release processing failed: {original_err}; offering Retry / Offline");
+    set_state(&state, UiState::DownloadFailed);
+    match user_rx.recv().await {
+        Some(UserAction::Retry) => Ok(AttemptOutcome::UserRetry),
+        Some(UserAction::Offline) => {
+            if let Some(local) = manifest::load_local(&install_dir) {
+                Ok(AttemptOutcome::Succeeded(FlowOutcome::UserRequestedOffline(
+                    local.launcher_executable,
+                )))
+            } else {
+                // Offline button clicked but no local install to fall
+                // back on → user can only give up. Surface as fatal with
+                // a message distinct from the underlying download error
+                // so logs separate the two failure modes.
+                let msg =
+                    "offline mode requested but no local install is available".to_string();
+                set_state(
+                    &state,
+                    UiState::FatalError {
+                        message: msg.clone(),
+                    },
+                );
+                Err(UpdaterError::NotFound(msg))
+            }
+        }
+        None => Err(UpdaterError::NotFound(
+            "UI action channel closed before user decision".to_string(),
+        )),
+    }
+}
+
 async fn process_release(
     install_dir: PathBuf,
     github: GitHubClient,
@@ -291,9 +458,10 @@ async fn process_release(
     let remote = github.fetch_manifest(&release, os).await?;
 
     let local = manifest::load_local(&install_dir);
-    let old_version = local
-        .as_ref()
-        .map_or_else(fresh_install_version, |m| m.version.clone());
+    // `Option<&Version>` — `None` is "fresh install / nothing on disk".
+    // Kept as a borrow instead of cloning: passed straight into
+    // `updater.swap_files(... Option<&Version>)` without allocating.
+    let old_version = local.as_ref().map(|m| &m.version);
     let diff = manifest::diff_manifests(local.as_ref(), &remote);
 
     if diff.is_empty() {
@@ -302,16 +470,33 @@ async fn process_release(
     }
 
     log::info!(
-        "updating {old_version} -> {}: {} file(s) to download",
+        "updating {} -> {}: {} file(s) to download",
+        old_version_display(old_version),
         remote.version,
         diff.len()
     );
 
     // --- Download phase ---
     let temp_dir = install_dir.join(".tmp-update");
+    // Clean any stale content from a crashed / interrupted prior run —
+    // `Downloader::new` only `create_dir_all`s, it doesn't truncate,
+    // so without this step a previous partial download could masquerade
+    // as a valid file and let the hash-verify step reject it every time.
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    // RAII cleanup: guarantees the temp directory is removed on every
+    // exit from `process_release`, including the early-error `?` paths.
+    // Previously the cleanup at the end of the function was only reached
+    // on the happy path, leaking bytes to disk on every failed update
+    // (download 5xx, verify fail, install fail).
+    let _temp_guard = TempDirGuard::new(temp_dir.clone());
     let downloader = Downloader::new(temp_dir.clone())?;
     let total_bytes: u64 = diff.iter().map(|f| f.size).sum();
-    let downloaded_so_far = Arc::new(Mutex::new(0_u64));
+    // `AtomicU64` instead of `Mutex<u64>`: the progress callback is
+    // called many times per downloaded file and a poisoned mutex (from a
+    // concurrent panic in the UI writer) would otherwise force every
+    // read to run `PoisonError::into_inner` or lose consistency. Atomic
+    // load/add is also cheaper and carries no poison state.
+    let downloaded_so_far = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut downloaded_files: Vec<(FileEntry, PathBuf)> = Vec::with_capacity(diff.len());
 
     for file in &diff {
@@ -319,7 +504,10 @@ async fn process_release(
         let s = Arc::clone(&state);
         let total_bytes_c = total_bytes;
         let progress = move |curr_file_bytes: u64, _file_total: u64| {
-            let base = *ds.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            // `Relaxed` is enough here — this counter is observed only
+            // for UI rendering and is written from a single task at a
+            // time. No cross-thread ordering requirements on other data.
+            let base = ds.load(std::sync::atomic::Ordering::Relaxed);
             let total_done = base + curr_file_bytes;
             let pct = progress_percent(total_done, total_bytes_c);
             let mut guard = s.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -330,9 +518,7 @@ async fn process_release(
             };
         };
         let path = downloader.download_verified(file, progress).await?;
-        *downloaded_so_far
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) += file.size;
+        downloaded_so_far.fetch_add(file.size, std::sync::atomic::Ordering::Relaxed);
         downloaded_files.push((file.clone(), path));
     }
 
@@ -344,27 +530,71 @@ async fn process_release(
     // --- Install phase ---
     set_state(&state, UiState::Installing);
     let updater = Updater::new(&install_dir);
-    updater.swap_files(&downloaded_files, &old_version)?;
+    updater.swap_files(&downloaded_files, old_version)?;
     updater.write_local_manifest(&remote)?;
     updater.write_version_file(&remote.version)?;
     let _ = updater.cleanup_old_backups(crate::updater::DEFAULT_KEEP_BACKUPS);
 
-    // Cleanup temp dir best-effort (next run will truncate anyway).
-    let _ = std::fs::remove_dir_all(&temp_dir);
-
+    // `_temp_guard` drops here and removes `.tmp-update/` — explicit
+    // cleanup removed because the RAII path covers success + every `?`
+    // early-exit above without duplicated code.
     Ok(remote.launcher_executable)
+}
+
+/// RAII guard: `remove_dir_all` on drop. Holds `.tmp-update/` for the
+/// lifetime of `process_release` and wipes it whether the function
+/// returns `Ok`, `Err`, or unwinds.
+///
+/// Errors from `remove_dir_all` are swallowed (log-warn only) — the
+/// only realistic cause is an AV scanner still holding a partial file,
+/// and the next run re-creates + re-truncates the directory anyway.
+struct TempDirGuard {
+    path: PathBuf,
+}
+
+impl TempDirGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
+            // `NotFound` is the common case when `process_release`
+            // returned early before the directory was ever created
+            // (or it was already cleaned). Log other errors because
+            // they point at a real disk / permission / AV issue worth
+            // investigating on a user's crash report.
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "temp dir cleanup failed at {}: {e}",
+                    self.path.display()
+                );
+            }
+        }
+    }
 }
 
 /// Clamped percent computation for progress updates. Extracted for tests;
 /// caller doesn't need to remember the division-by-zero guard.
+/// Returns [`Percent`] so the clamp-at-100 invariant survives into the
+/// UI state without every call site having to remember `.min(100)`.
 #[must_use]
-pub fn progress_percent(done_bytes: u64, total_bytes: u64) -> u8 {
+pub fn progress_percent(done_bytes: u64, total_bytes: u64) -> crate::Percent {
     if total_bytes == 0 {
-        return 100;
+        return crate::Percent::new(100);
     }
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     let pct = ((done_bytes as f64 / total_bytes as f64) * 100.0) as u32;
-    pct.min(100) as u8
+    // `Percent::new` clamps at 100 — passes through u8 cast because any
+    // u32 value >255 is >100 and collapses to Percent(100) anyway, but
+    // use min() here for an explicit u32→u8 path without surprises.
+    crate::Percent::new(u8::try_from(pct.min(100)).unwrap_or(100))
 }
 
 /// Write a new UI state, recovering from a poisoned mutex so a single
@@ -391,9 +621,16 @@ mod tests {
     }
 
     #[test]
-    fn fresh_install_version_is_placeholder_zero() {
-        let v = fresh_install_version();
-        assert_eq!(v.as_str(), "0.0.0");
+    fn old_version_display_none_is_fresh_install_marker() {
+        // Replaces `fresh_install_version()` test: the sentinel is gone,
+        // but the display string is still part of the log contract.
+        assert_eq!(old_version_display(None), "(fresh install)");
+    }
+
+    #[test]
+    fn old_version_display_some_returns_version_string() {
+        let v = Version::parse("1.2.3").unwrap();
+        assert_eq!(old_version_display(Some(&v)), "1.2.3");
     }
 
     // --- progress_percent ---
@@ -403,19 +640,19 @@ mod tests {
         // Edge case: empty download batch (all files cache-verified as
         // already present). Percent is meaningless; returning 100 reads
         // as "done" rather than crashing on divide-by-zero.
-        assert_eq!(progress_percent(0, 0), 100);
+        assert_eq!(progress_percent(0, 0).as_u8(), 100);
     }
 
     #[test]
     fn progress_percent_half_done() {
-        assert_eq!(progress_percent(500, 1000), 50);
+        assert_eq!(progress_percent(500, 1000).as_u8(), 50);
     }
 
     #[test]
     fn progress_percent_clamps_at_100() {
         // Server lied about Content-Length — downloaded > total. UI
         // should show 100%, not 150%.
-        assert_eq!(progress_percent(1500, 1000), 100);
+        assert_eq!(progress_percent(1500, 1000).as_u8(), 100);
     }
 
     #[test]
@@ -423,7 +660,7 @@ mod tests {
         // 10 GB scale — f64 cast precision is lossy but the result
         // still rounds to a sane percent.
         const TEN_GB: u64 = 10 * 1024 * 1024 * 1024;
-        assert_eq!(progress_percent(TEN_GB / 2, TEN_GB), 50);
+        assert_eq!(progress_percent(TEN_GB / 2, TEN_GB).as_u8(), 50);
     }
 
     // --- set_state ---

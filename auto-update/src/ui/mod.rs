@@ -111,7 +111,7 @@ impl eframe::App for AutoUpdateApp {
                 } => {
                     ui.label(i18n::downloading_percent(self.lang, *percent));
                     ui.add(
-                        egui::ProgressBar::new(f32::from(*percent) / 100.0)
+                        egui::ProgressBar::new(f32::from(percent.as_u8()) / 100.0)
                             .desired_width(300.0),
                     );
                     // Format bytes → MB at render time; truth stays u64.

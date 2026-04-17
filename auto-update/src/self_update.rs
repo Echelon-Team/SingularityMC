@@ -269,6 +269,37 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"critical");
     }
 
+    #[test]
+    fn cleanup_scope_is_confined_to_install_dir() {
+        // Pins that `cleanup_stale_files` only scans `install_dir` — it
+        // must never recurse into parents or follow `std::env::temp_dir`.
+        // Raised in review after self_replace docs warned that the
+        // library's temp-file placement is "undefined", so scanning
+        // global /tmp would risk false-positive deletes from unrelated
+        // apps that happened to pick our dot-prefixed suffix.
+        let install = TempDir::new().unwrap();
+        let sibling = TempDir::new().unwrap();
+
+        // Stale file IN install_dir — must be swept.
+        let in_dir = install.path().join(".auto-update.__selfdelete__abc.exe");
+        std::fs::write(&in_dir, b"stale").unwrap();
+
+        // Stale-named file OUTSIDE install_dir (sibling tempdir) — must
+        // NOT be swept. If cleanup ever walks outside install_dir this
+        // assertion flips.
+        let outside = sibling.path().join(".auto-update.__selfdelete__outside.exe");
+        std::fs::write(&outside, b"not ours").unwrap();
+
+        cleanup_stale_files(install.path());
+
+        assert!(!in_dir.exists(), "stale file inside install_dir must be removed");
+        assert!(
+            outside.exists(),
+            "file outside install_dir must survive — cleanup must not walk outside its scope"
+        );
+        assert_eq!(std::fs::read(&outside).unwrap(), b"not ours");
+    }
+
     // --- apply_pending (unit-level bounded by cross-process constraints) ---
 
     #[test]

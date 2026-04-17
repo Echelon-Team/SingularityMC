@@ -174,6 +174,19 @@ fn main() -> anyhow::Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 
+    // eframe returned — the window is gone and `app` (which owns the
+    // callbacks' `user_tx` clones) is dropped by now, so the channel is
+    // closed. Give the background task up to 2 s to observe that,
+    // propagate a final state if it was mid-`recv`, and finish any
+    // in-flight disk/HTTP work cleanly. Without this, `rt.drop()` would
+    // cancel the task at its next `.await`, potentially mid-write —
+    // which on Windows can leave an orphaned `.tmp-update/` directory or
+    // an AV-locked half-swapped file. 2 s is a conservative upper bound
+    // for our async operations (each already has its own internal
+    // timeout); a hung task past that deadline is a real bug, and hard-
+    // cancelling is the right remedy.
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
+
     Ok(())
 }
 

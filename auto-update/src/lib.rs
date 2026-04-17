@@ -190,6 +190,44 @@ impl std::fmt::Display for Sha256 {
     }
 }
 
+/// Percent in the range `0..=100`, clamped at the constructor. Used by
+/// the download-progress path so `UiState::Downloading.percent` cannot
+/// carry nonsense values — the previous `u8` admitted anything up to 255
+/// and relied on every call site remembering to clamp via
+/// `progress_percent` before storing.
+///
+/// `Copy` because this is a two-byte value carried on every progress
+/// tick; forcing clone ergonomics would just be friction.
+///
+/// NOT `#[non_exhaustive]` — this is a value-object with one logical
+/// field; there's no extension axis to protect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Percent(u8);
+
+impl Percent {
+    /// Clamping constructor. Values `>100` saturate to `100` instead of
+    /// erroring — a server lying about `Content-Length` would otherwise
+    /// crash the download path, which is worse than a visible-but-stuck
+    /// 100% progress bar.
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        if value > 100 { Self(100) } else { Self(value) }
+    }
+
+    /// Raw access for egui's `ProgressBar` (wants `f32` in `0.0..=1.0`)
+    /// and format strings (`{percent}%`).
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for Percent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// A path sourced from a manifest: guaranteed relative, forward-slash-
 /// separated, and free of `..` traversal components.
 ///
