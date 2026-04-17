@@ -16,11 +16,16 @@
 
 pub mod config;
 pub mod error;
+pub mod github_api;
 pub mod manifest;
 pub mod util;
 
 pub use config::{AutoUpdateConfig, Channel, LanguagePreference};
 pub use error::{Result, UpdaterError};
+// Asset intentionally NOT re-exported: external consumers reach it via
+// `release.assets` field access; adding it to the public root would widen
+// the API surface for zero gain.
+pub use github_api::{GitHubClient, Release};
 pub use manifest::{FileEntry, Manifest, OsTarget};
 
 use serde::{Deserialize, Serialize};

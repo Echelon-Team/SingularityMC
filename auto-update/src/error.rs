@@ -57,6 +57,20 @@ pub enum UpdaterError {
     /// install location.
     #[error("insufficient permissions: {0}")]
     Permission(String),
+
+    /// Expected resource was absent from a nominally-successful response —
+    /// e.g. a Beta channel request found no prerelease, or a Release had
+    /// no `manifest-{os}.json` asset. Distinct from [`Self::Network`]: the
+    /// HTTP layer succeeded, but the server state didn't contain what we
+    /// needed. Callers map this to user-friendly UI text in Task 2.10.
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    /// Invalid runtime configuration: malformed base URL, empty owner/repo,
+    /// bad env var, etc. Distinct from [`Self::Network`] because nothing
+    /// was attempted on the wire — this fires at client construction.
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 #[cfg(test)]
