@@ -90,6 +90,19 @@ pub enum UpdaterError {
         original: Box<UpdaterError>,
         rollback_failures: Vec<String>,
     },
+
+    /// `self-replace` crate failed to swap the running auto-update binary
+    /// with its pending replacement. Swap did NOT commit — binary on disk
+    /// is still the old one. Safe to retry the update.
+    #[error("self-update swap failed: {0}")]
+    SelfUpdateSwapFailed(#[source] std::io::Error),
+
+    /// Self-replace swap SUCCEEDED but respawning the new binary failed.
+    /// Binary on disk IS the new version; next manual launch will run it.
+    /// NOT safe to retry as "update" — the pending file is gone. State
+    /// machine should surface "please restart" to the user.
+    #[error("self-update swap committed but respawn failed: {0}")]
+    SelfUpdateRespawnFailed(#[source] std::io::Error),
 }
 
 #[cfg(test)]

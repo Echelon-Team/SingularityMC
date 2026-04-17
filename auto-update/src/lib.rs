@@ -19,6 +19,7 @@ pub mod downloader;
 pub mod error;
 pub mod github_api;
 pub mod manifest;
+pub mod self_update;
 pub mod updater;
 pub mod util;
 
