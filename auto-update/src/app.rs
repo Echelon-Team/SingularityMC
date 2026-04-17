@@ -603,45 +603,57 @@ impl Drop for TempDirGuard {
     }
 }
 
-/// Outer-loop retry backoff schedule in seconds, indexed by the
-/// 1-based retry count. Values past the last index saturate — so
-/// `retry_index ≥ 5` all map to 16 s. Pure + table-driven so mutation
-/// tests can pin the exact values without fighting with wall-clock
-/// sleeps.
+/// Auto-retry cooldown ladder in seconds, indexed by the 1-based retry
+/// count. Formula: `min(8 + 2*(retry_index - 1), 30)`. Ladder:
+/// 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 30, 30, ...
 ///
-/// **Why this table vs. `1 << (retry_index - 1)` math:** the shift form
-/// looked like it capped at 30 but actually topped out at 16 because of
-/// the `min(5)` bound — a pre-existing bug where the doc-comment lied
-/// to readers. The table is self-documenting and unit-testable.
+/// The ladder is shared by every auto-retry path in the state machine
+/// (NoInternet API retries, DownloadFailed background retries) — one
+/// rule set so UX is consistent regardless of where the failure hit.
+/// Values grow gently from 8 s so the user gets a short-enough first
+/// wait to perceive progress, and cap at 30 s (matches the inner
+/// NoInternet retry cadence and the perceptual "anything longer
+/// feels stuck" threshold).
+///
+/// Uses `saturating_*` arithmetic so monumentally large retry indices
+/// (u32::MAX) cap cleanly at 30 s instead of wrapping.
 #[must_use]
-pub const fn backoff_floor_secs(retry_index: u32) -> u64 {
-    const BACKOFF_STEPS_SECS: [u64; 5] = [1, 2, 4, 8, 16];
-    const LAST_IDX: usize = BACKOFF_STEPS_SECS.len() - 1;
+pub(crate) const fn backoff_floor_secs(retry_index: u32) -> u64 {
+    const BASE_SECS: u64 = 8;
+    const STEP_SECS: u64 = 2;
+    const CAP_SECS: u64 = 30;
     if retry_index == 0 {
         return 0;
     }
-    // `Ord::min` isn't usable in `const fn` on stable Rust 1.95 yet; a
-    // hand-rolled `if` keeps the const-ness intact.
-    let raw_idx = retry_index as usize - 1;
-    let idx = if raw_idx > LAST_IDX { LAST_IDX } else { raw_idx };
-    BACKOFF_STEPS_SECS[idx]
+    let offset = (retry_index as u64).saturating_sub(1);
+    let raw = BASE_SECS.saturating_add(STEP_SECS.saturating_mul(offset));
+    if raw > CAP_SECS { CAP_SECS } else { raw }
 }
 
-/// Wrap [`backoff_floor_secs`] with random jitter (0..=500 ms) to
-/// prevent thundering-herd synchronization when many clients retry
-/// against a flaky GitHub API at the same time. The base is deterministic
-/// (table) for debuggability; only the jitter fraction is random.
-///
-/// Not a `const fn` because it pulls a random sample — used only from
-/// the outer-loop rate-limiter, which is already a tokio await boundary.
-fn backoff_floor_duration_with_jitter(retry_index: u32) -> Duration {
-    use rand::Rng;
+/// Jitter ceiling applied on top of [`backoff_floor_secs`]. Uniform
+/// `0..JITTER_MAX_MS` spread keeps retry storms from synchronizing
+/// when many clients retry against a flaky GitHub edge at once.
+pub(crate) const JITTER_MAX_MS: u64 = 500;
+
+/// Combine [`backoff_floor_secs`] with a jitter sample drawn from the
+/// caller's RNG. DI-flavoured signature so unit tests can pin the exact
+/// value (deterministic `StepRng`) instead of sampling 20 times and
+/// hoping the distribution hit the asserted bounds.
+pub(crate) fn backoff_floor_duration_with_rng<R: rand::Rng + ?Sized>(
+    retry_index: u32,
+    rng: &mut R,
+) -> Duration {
     let base_secs = backoff_floor_secs(retry_index);
-    // rand 0.9 API: `rand::rng()` replaces the 0.8 `thread_rng()`,
-    // `random_range` replaces `gen_range`. Matches the downloader's
-    // existing jitter pattern so both retry paths stay consistent.
-    let jitter_ms: u64 = rand::rng().random_range(0..500);
+    let jitter_ms: u64 = rng.random_range(0..JITTER_MAX_MS);
     Duration::from_secs(base_secs) + Duration::from_millis(jitter_ms)
+}
+
+/// Production wrapper around [`backoff_floor_duration_with_rng`] that
+/// uses `rand::rng()` (thread-local ChaCha12) for the jitter source.
+/// Matches the downloader's existing jitter pattern so both retry
+/// paths stay consistent.
+fn backoff_floor_duration_with_jitter(retry_index: u32) -> Duration {
+    backoff_floor_duration_with_rng(retry_index, &mut rand::rng())
 }
 
 /// Clamped percent computation for progress updates. Extracted for tests;
@@ -691,51 +703,69 @@ mod tests {
     // --- backoff_floor_secs ---
 
     #[test]
-    fn backoff_floor_secs_table_pins_exact_ladder() {
-        // Regression guard + documentation: the exact retry-index →
-        // seconds mapping the outer loop uses. Any mutation that
-        // flips a step (e.g. 1→0 s, 4→3 s) trips this assert loudly.
-        assert_eq!(backoff_floor_secs(0), 0);
-        assert_eq!(backoff_floor_secs(1), 1);
-        assert_eq!(backoff_floor_secs(2), 2);
-        assert_eq!(backoff_floor_secs(3), 4);
-        assert_eq!(backoff_floor_secs(4), 8);
+    fn backoff_floor_secs_ladder_matches_spec() {
+        // Spec ladder: start at 8 s, +2 s per retry, cap at 30 s.
+        // Any mutation flipping a step trips this assert loudly.
+        assert_eq!(backoff_floor_secs(0), 0, "retry 0 = no wait");
+        assert_eq!(backoff_floor_secs(1), 8);
+        assert_eq!(backoff_floor_secs(2), 10);
+        assert_eq!(backoff_floor_secs(3), 12);
+        assert_eq!(backoff_floor_secs(4), 14);
         assert_eq!(backoff_floor_secs(5), 16);
+        assert_eq!(backoff_floor_secs(6), 18);
+        assert_eq!(backoff_floor_secs(10), 26);
+        assert_eq!(backoff_floor_secs(11), 28);
+        assert_eq!(backoff_floor_secs(12), 30, "cap reached at retry 12");
     }
 
     #[test]
-    fn backoff_floor_secs_saturates_past_table_end() {
-        // Retry index past the last ladder entry must NOT panic (shift
-        // overflow in the old `1<<n` implementation would have) and must
-        // saturate to the last value. 1_000_000 is a stand-in for
-        // "user spam-clicking for an hour" — realistic worst case.
-        assert_eq!(backoff_floor_secs(6), 16);
-        assert_eq!(backoff_floor_secs(100), 16);
-        assert_eq!(backoff_floor_secs(1_000_000), 16);
-        assert_eq!(backoff_floor_secs(u32::MAX), 16);
+    fn backoff_floor_secs_saturates_at_cap() {
+        // Past the cap point, every retry index saturates at 30 s — no
+        // panic on extreme inputs, no wrap-around. `u32::MAX` pins the
+        // saturating_* arithmetic contract (naive `8 + 2*(u32::MAX-1)`
+        // would overflow to u64 but saturation keeps us at 30).
+        assert_eq!(backoff_floor_secs(13), 30);
+        assert_eq!(backoff_floor_secs(100), 30);
+        assert_eq!(backoff_floor_secs(1_000_000), 30);
+        assert_eq!(backoff_floor_secs(u32::MAX), 30);
     }
 
     #[test]
-    fn backoff_floor_duration_with_jitter_respects_base_plus_jitter_bounds() {
-        // Jitter is uniform 0..500 ms, so the returned duration is
-        // `base_secs..=base_secs + 499 ms`. Sample enough times to
-        // make the assertion stable without binding the test to a
-        // specific RNG seed.
-        for idx in 1..=5 {
-            for _ in 0..20 {
-                let d = backoff_floor_duration_with_jitter(idx);
-                let base = Duration::from_secs(backoff_floor_secs(idx));
-                let upper = base + Duration::from_millis(500);
-                assert!(
-                    d >= base,
-                    "jitter must not subtract from base: idx={idx} d={d:?} base={base:?}"
-                );
-                assert!(
-                    d < upper,
-                    "jitter must stay under +500 ms: idx={idx} d={d:?} upper={upper:?}"
-                );
+    fn backoff_floor_duration_with_rng_deterministic_under_step_rng() {
+        // DI-friendly form means we can pin the exact duration without
+        // relying on distribution luck. `StepRng::new(0, 1)` yields 0, 1,
+        // 2, ... as sequential u64 draws; `random_range(0..500)` ends up
+        // returning those values modulo 500 → jitter_ms = 0 the first
+        // time. Base (retry=1) = 8 s; total = 8 s + 0 ms = exactly 8 s.
+        use rand::rngs::mock::StepRng;
+        let mut rng = StepRng::new(0, 1);
+        let d = backoff_floor_duration_with_rng(1, &mut rng);
+        assert_eq!(d, Duration::from_secs(8));
+    }
+
+    #[test]
+    fn backoff_floor_duration_with_rng_exercises_jitter_distribution() {
+        // The previous `d < upper` assertion was structurally
+        // unreachable (jitter range is exclusive at 500), so it
+        // tolerated a `jitter_ms = 0` mutation. Sample 200 times and
+        // assert at least one draw exceeds base — if the jitter path
+        // is deleted, every sample equals `base` and this fails.
+        let base = Duration::from_secs(backoff_floor_secs(1));
+        let upper = base + Duration::from_millis(JITTER_MAX_MS);
+        let mut saw_jitter = false;
+        for _ in 0..200 {
+            let d = backoff_floor_duration_with_rng(1, &mut rand::rng());
+            assert!(d >= base, "jitter must not subtract from base: {d:?}");
+            assert!(d < upper, "jitter must stay under cap: {d:?} vs {upper:?}");
+            if d > base {
+                saw_jitter = true;
             }
         }
+        assert!(
+            saw_jitter,
+            "across 200 samples at least one must have nonzero jitter \
+             (probability of 200 consecutive zeros is 1/500^200, ~0)"
+        );
     }
 
     // --- old_version_display ---

@@ -151,14 +151,16 @@ fn main() -> anyhow::Result<()> {
             }
             // `FlowOutcome` is `#[non_exhaustive]` — a future variant
             // added upstream would require either wiring here or
-            // falling into this catch-all. Logged explicitly so the
-            // runtime surface is obvious.
+            // falling into this catch-all. The USER-facing message is
+            // pulled from the localized `Strings` bundle (so a PL
+            // install doesn't see an English Debug format). The Debug
+            // render goes only to the log, which is for us.
             Ok(other) => {
                 log::error!("unhandled FlowOutcome variant: {other:?}");
                 singularitymc_auto_update::app::set_state(
                     &state_bg,
                     UiState::FatalError {
-                        message: format!("unhandled flow outcome: {other:?}"),
+                        message: strings(lang).unhandled_flow_outcome.to_string(),
                     },
                 );
             }

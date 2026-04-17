@@ -15,4 +15,6 @@ pub const STRINGS: &Strings = &Strings {
     close: "Zamknij",
     no_offline_install:
         "Pobieranie nieudane, a lokalna instalacja nie jest dostępna do trybu offline.",
+    unhandled_flow_outcome:
+        "Nieoczekiwany stan aktualizacji. Zgłoś problem na Discordzie.",
 };

@@ -134,7 +134,11 @@ impl GitHubClient {
                 "SingularityMC-AutoUpdate/{}",
                 crate::BUILD_VERSION
             ))
-            .timeout(Duration::from_secs(30))
+            // 10 s per-request timeout. Short enough that a stalled
+            // GitHub edge fails fast and the auto-retry ladder (8 s, 10 s,
+            // 12 s, ...) gets a chance to surface progress to the user
+            // instead of leaving them staring at a spinner for 30 s.
+            .timeout(Duration::from_secs(10))
             .build()?;
         Ok(Self {
             client,

@@ -835,18 +835,28 @@ async fn download_failed_without_local_hides_offline_flag() {
 #[tokio::test(flavor = "current_thread")]
 async fn temp_dir_pre_clean_wipes_stale_content_on_entry() {
     // Pre-existing `.tmp-update/` content from a crashed prior run
-    // must be wiped when `process_release` starts — otherwise a
-    // partial file there could masquerade as a downloaded one and
-    // every hash-verify attempt would reject it on the same byte range
-    // forever. Covers the `fs::remove_dir_all` pre-clean at
-    // `process_release`'s top.
+    // must be wiped when `process_release` starts. Previously the
+    // stale sentinel was at `.tmp-update/leftover-from-crash.bin` —
+    // a path the downloader never touches, so even without the
+    // pre-clean the test passed (TempDirGuard::drop wipes it on exit).
+    // NOW we seed at the EXACT path the downloader will write to
+    // (`.tmp-update/launcher/app.jar`) with wrong bytes: if the
+    // pre-clean is removed, the stale file's bytes would still sit
+    // there at process_release entry and the hash-verify step would
+    // fail (bytes != expected). The flow must succeed, proving the
+    // pre-clean ran.
     let install_dir = tempfile::tempdir().unwrap();
-    // Seed stale content in .tmp-update/ BEFORE the flow runs.
     let stale_temp = install_dir.path().join(".tmp-update");
-    std::fs::create_dir_all(&stale_temp).unwrap();
+    std::fs::create_dir_all(stale_temp.join("launcher")).unwrap();
+    let stale_at_download_path = stale_temp.join("launcher/app.jar");
+    std::fs::write(&stale_at_download_path, b"STALE BYTES WRONG HASH").unwrap();
+    // Keep the root sentinel too — proves neither path survives.
     let stale_sentinel = stale_temp.join("leftover-from-crash.bin");
     std::fs::write(&stale_sentinel, b"stale").unwrap();
-    assert!(stale_sentinel.exists(), "pre-condition: sentinel exists");
+    assert!(
+        stale_at_download_path.exists() && stale_sentinel.exists(),
+        "pre-condition: stale content in place"
+    );
 
     let server = MockServer::start().await;
     let file_bytes: &[u8] = b"fresh payload";

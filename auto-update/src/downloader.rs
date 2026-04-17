@@ -61,6 +61,12 @@ const DEFAULT_BASE_BACKOFF: Duration = Duration::from_secs(1);
 /// we'd rather finish than aggressively kill a near-done download.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Connect-phase timeout. Separate from total `REQUEST_TIMEOUT` so a
+/// stalled TCP handshake (dead edge, routed to a black hole) fails fast
+/// and the auto-retry ladder can take over, without shortening the
+/// post-connect body-transfer window for multi-minute JAR downloads.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Shift cap — prevents `1u32 << attempt` from overflowing if a caller ever
 /// passes a huge max_attempts. 2^30 seconds is already ~34 years of base=1s
 /// backoff, far beyond anything sane.
@@ -96,6 +102,7 @@ impl Downloader {
                 "SingularityMC-AutoUpdate/{}",
                 crate::BUILD_VERSION
             ))
+            .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()?;
         Ok(Self {

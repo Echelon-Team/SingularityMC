@@ -80,6 +80,12 @@ pub struct Strings {
     /// string in `app.rs`, which is now the only user-visible copy that
     /// would leak through the language gate.
     pub no_offline_install: &'static str,
+    /// FatalError message surfaced when `FlowOutcome` grows a new
+    /// variant upstream and the current `main.rs` dispatcher hits its
+    /// `#[non_exhaustive]` catch-all. User sees a translated message
+    /// instead of the Debug-format default which always renders in
+    /// English regardless of the selected locale.
+    pub unhandled_flow_outcome: &'static str,
 }
 
 /// Resolve a stored [`LanguagePreference`] to a concrete [`Lang`].
@@ -216,6 +222,7 @@ mod tests {
                 retry,
                 close,
                 no_offline_install,
+                unhandled_flow_outcome,
             } = *strings(lang);
             for (name, v) in [
                 ("checking", checking),
@@ -229,6 +236,7 @@ mod tests {
                 ("retry", retry),
                 ("close", close),
                 ("no_offline_install", no_offline_install),
+                ("unhandled_flow_outcome", unhandled_flow_outcome),
             ] {
                 assert!(!v.is_empty(), "{lang:?}.{name} must not be empty");
             }
