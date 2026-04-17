@@ -101,7 +101,7 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun `initial state has no lastPlayed and isLoadingNews true`() = runTest {
+    fun `initial state has no lastPlayed`() = runTest {
         val vm = HomeViewModel(FakeInstanceManager(), UnconfinedTestDispatcher(testDispatcher.scheduler))
         val state = vm.state.first()
         assertNull(state.lastPlayedInstance)
@@ -127,15 +127,6 @@ class HomeViewModelTest {
         val vm = HomeViewModel(FakeInstanceManager(lastPlayed = null), UnconfinedTestDispatcher(testDispatcher.scheduler))
         testDispatcher.scheduler.advanceUntilIdle()
         assertNull(vm.state.first().lastPlayedInstance)
-    }
-
-    @Test
-    fun `loadNews loads mock news from bundled resource`() = runTest {
-        val vm = HomeViewModel(FakeInstanceManager(), UnconfinedTestDispatcher(testDispatcher.scheduler))
-        testDispatcher.scheduler.advanceUntilIdle()
-        val state = vm.state.first()
-        assertFalse(state.isLoadingNews)
-        assertTrue(state.news.isEmpty(), "News should be empty until Discord integration (post-v1)")
     }
 
     @Test
@@ -176,14 +167,11 @@ class HomeViewModelTest {
     // === loadReleases tests (Task 1.8) ===
 
     @Test
-    fun `loadReleases skips when newsRepository is null (legacy ctor) and sets unavailable error`() = runTest {
+    fun `loadReleases sets Unavailable when newsRepository is null (legacy ctor)`() = runTest {
         val vm = HomeViewModel(FakeInstanceManager(), UnconfinedTestDispatcher(testDispatcher.scheduler))
         testDispatcher.scheduler.advanceUntilIdle()
 
-        val state = vm.state.first()
-        assertTrue(state.releases.isEmpty())
-        assertFalse(state.isLoadingReleases)
-        assertEquals("unavailable", state.releasesError, "null DI triggers unavailable error state")
+        assertEquals(ReleasesState.Unavailable, vm.state.first().releasesState)
     }
 
     @Test
@@ -201,7 +189,7 @@ class HomeViewModelTest {
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
-        assertEquals(sample, vm.state.first().releases)
+        assertEquals(ReleasesState.Loaded(sample), vm.state.first().releasesState)
         assertEquals(0, repo.fetchCount.get(), "cache hit must not trigger repo fetch")
     }
 
@@ -219,14 +207,13 @@ class HomeViewModelTest {
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
-        val state = vm.state.first()
-        assertEquals(fetched, state.releases)
+        assertEquals(ReleasesState.Loaded(fetched), vm.state.first().releasesState)
         assertEquals(1, repo.fetchCount.get())
         assertEquals(fetched, cache.get(), "cache populated after successful fetch")
     }
 
     @Test
-    fun `loadReleases does not cache empty fetch result and sets fetch-failed error`() = runTest {
+    fun `loadReleases does not cache empty fetch result and sets FetchFailed`() = runTest {
         val cache = NewsCache(Duration.ofHours(6))
         val repo = SpyNewsRepository(fakeReleases = emptyList())
 
@@ -239,11 +226,11 @@ class HomeViewModelTest {
         testDispatcher.scheduler.advanceUntilIdle()
 
         assertNull(cache.get(), "empty fetch should NOT poison cache — next load retries repo")
-        assertEquals("fetch-failed", vm.state.first().releasesError)
+        assertEquals(ReleasesState.FetchFailed, vm.state.first().releasesState)
     }
 
     @Test
-    fun `loadReleases skips when OfflineMode enabled and sets offline error`() = runTest {
+    fun `loadReleases skips when OfflineMode enabled and sets Offline`() = runTest {
         OfflineMode.parseArgs(arrayOf("--offline"))
         val cache = NewsCache(Duration.ofHours(6))
         val repo = SpyNewsRepository(fakeReleases = listOf(fakeRelease("v1.0")))
@@ -256,9 +243,7 @@ class HomeViewModelTest {
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
-        val state = vm.state.first()
-        assertTrue(state.releases.isEmpty())
-        assertEquals("offline", state.releasesError, "offline mode distinguishable in UI")
+        assertEquals(ReleasesState.Offline, vm.state.first().releasesState)
         assertEquals(0, repo.fetchCount.get(), "offline mode must not fetch")
     }
 
@@ -283,21 +268,23 @@ class HomeViewModelTest {
         )
         testDispatcher.scheduler.advanceUntilIdle()
 
-        val state = vm.state.first()
-        assertTrue(state.releases.isEmpty(), "thrown exception results in empty releases")
-        assertFalse(state.isLoadingReleases, "loading flag cleared even on exception")
-        assertEquals("fetch-failed", state.releasesError, "exception treated as fetch failure")
+        assertEquals(
+            ReleasesState.FetchFailed,
+            vm.state.first().releasesState,
+            "exception treated as fetch failure",
+        )
     }
 
     @Test
-    fun `isLoadingReleases flips true then false around fetch`() = runTest {
+    fun `releasesState is Loading before fetch completes then Loaded after`() = runTest {
         val standardDispatcher = StandardTestDispatcher(testDispatcher.scheduler)
-        val repo = SpyNewsRepository(fakeReleases = listOf(fakeRelease("v1.0")))
+        val fetched = listOf(fakeRelease("v1.0"))
+        val repo = SpyNewsRepository(fakeReleases = fetched)
         val cache = NewsCache(Duration.ofHours(6))
 
-        // Constructor runs init{} → loadReleases() synchronously sets isLoadingReleases=true
-        // via updateState (sync StateFlow.value=...). Then viewModelScope.launch submits
-        // the fetch to the scheduler, which is NOT yet advanced.
+        // Constructor runs init{} → loadReleases() synchronously emits Loading (cache miss
+        // path) via updateState (sync StateFlow.value=...). Then viewModelScope.launch
+        // submits the fetch to the scheduler, which is NOT yet advanced.
         val vm = HomeViewModel(
             FakeInstanceManager(),
             standardDispatcher,
@@ -306,16 +293,106 @@ class HomeViewModelTest {
         )
 
         // Capture state BEFORE advancing scheduler — fetch coroutine is pending.
-        val midState = vm.state.first()
-        assertTrue(
-            midState.isLoadingReleases,
-            "loading should be true immediately after construction (before scheduler advances)",
+        assertEquals(
+            ReleasesState.Loading,
+            vm.state.first().releasesState,
+            "Loading emitted immediately after construction (before scheduler advances)",
         )
 
         // Now let the launched fetch complete.
         testDispatcher.scheduler.advanceUntilIdle()
-        val finalState = vm.state.first()
-        assertFalse(finalState.isLoadingReleases, "loading should be false after fetch completes")
+        assertEquals(
+            ReleasesState.Loaded(fetched),
+            vm.state.first().releasesState,
+            "Loaded after fetch completes",
+        )
         assertEquals(1, repo.fetchCount.get())
+    }
+
+    @Test
+    fun `loadLastPlayed swallows exception and leaves lastPlayedInstance null`() = runTest {
+        val throwingMgr = object : InstanceManager {
+            override suspend fun getLastPlayed(): InstanceManager.Instance? =
+                throw RuntimeException("disk I/O failure")
+            override suspend fun getAll(): List<InstanceManager.Instance> = emptyList()
+            override suspend fun getById(id: String): InstanceManager.Instance? = null
+            override suspend fun create(config: InstanceConfig): InstanceManager.Instance = error("not used")
+            override suspend fun update(instance: InstanceManager.Instance) {}
+            override suspend fun delete(id: String) {}
+        }
+        val vm = HomeViewModel(throwingMgr, UnconfinedTestDispatcher(testDispatcher.scheduler))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertNull(
+            vm.state.first().lastPlayedInstance,
+            "unexpected exception in loadLastPlayed must not crash VM",
+        )
+    }
+
+    @Test
+    fun `loadReleases returns Loaded with empty list when cache holds empty`() = runTest {
+        // Edge case: cache pre-populated with empty list (e.g. repo has no stable releases
+        // yet, prior successful fetch returned []). HomeScreen has a dedicated UI branch
+        // rendering "home.news.empty" for this state — pin the reachability.
+        val cache = NewsCache(Duration.ofHours(6))
+        cache.put(emptyList())
+        val repo = SpyNewsRepository(fakeReleases = listOf(fakeRelease("v1.0")))
+
+        val vm = HomeViewModel(
+            FakeInstanceManager(),
+            UnconfinedTestDispatcher(testDispatcher.scheduler),
+            newsRepository = repo,
+            newsCache = cache,
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            ReleasesState.Loaded(emptyList()),
+            vm.state.first().releasesState,
+            "empty cache entry is a valid cache hit — must produce Loaded(empty), not trigger FetchFailed",
+        )
+        assertEquals(0, repo.fetchCount.get(), "empty cache hit still counts as hit — no repo fetch")
+    }
+
+    @Test
+    fun `loadReleases rethrows CancellationException instead of swallowing into FetchFailed`() = runTest {
+        // Pins structured-concurrency contract: prior review caught that
+        // `catch (e: Exception)` alone on JVM would swallow CancellationException
+        // (CancellationException extends IllegalStateException → Exception), silently
+        // converting scope-cancellation into a FetchFailed UI state. The rethrow-first
+        // pattern `catch (CancellationException) { throw e }` must stay; this test fails
+        // if someone "cleans up" that rethrow thinking it's redundant.
+        val cache = NewsCache(Duration.ofHours(6))
+        val cancellingRepo = object : NewsRepository(
+            httpClient = HttpClient(MockEngine { respondError(HttpStatusCode.NotImplemented) }),
+            repoOwner = "test",
+            repoName = "test",
+        ) {
+            override suspend fun fetchLatestReleases(limit: Int): List<ReleaseInfo> {
+                throw kotlinx.coroutines.CancellationException("simulated scope cancellation")
+            }
+        }
+
+        val vm = HomeViewModel(
+            FakeInstanceManager(),
+            UnconfinedTestDispatcher(testDispatcher.scheduler),
+            newsRepository = cancellingRepo,
+            newsCache = cache,
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // If the catch swallowed CancellationException, it would fall through to `emptyList()`
+        // → FetchFailed. Rethrow-first pattern leaves state at the pre-fetch Loading emission.
+        val finalState = vm.state.first().releasesState
+        assertNotEquals(
+            ReleasesState.FetchFailed,
+            finalState,
+            "CancellationException must not be swallowed into FetchFailed — got $finalState",
+        )
+        assertEquals(
+            ReleasesState.Loading,
+            finalState,
+            "state stays at Loading (emitted before fetch coroutine) when CancellationException propagates",
+        )
     }
 }

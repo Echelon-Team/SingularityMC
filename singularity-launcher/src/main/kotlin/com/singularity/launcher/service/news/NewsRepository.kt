@@ -59,11 +59,26 @@ open class NewsRepository(
                 return emptyList()
             }
             val all: List<ReleaseInfo> = response.body()
-            all.filter { !it.isPrerelease }.take(limit)
+            // Defensive dedup: GitHub does NOT actually guarantee tag_name uniqueness
+            // across concurrent drafts and published releases (see goreleaser#3148,
+            // community/51299 — real-world collisions exist). UI uses tagName as
+            // LazyVerticalGrid key — a duplicate here crashes the news card list with
+            // IllegalStateException. `distinctBy` is correctness, not paranoia; it's a
+            // no-op when there are no duplicates (~zero cost).
+            val stable = all.filter { !it.isPrerelease }
+            val deduped = stable.distinctBy { it.tagName }
+            if (deduped.size != stable.size) {
+                logger.warn(
+                    "GitHub Releases API returned duplicate tag names — deduped {} → {} entries",
+                    stable.size,
+                    deduped.size,
+                )
+            }
+            deduped.take(limit)
         } catch (e: CancellationException) {
             throw e  // cooperate with structured concurrency (e.g. UI nav away cancels)
         } catch (e: Exception) {
-            logger.warn("Failed to fetch releases from GitHub: {}", e.message)
+            logger.warn("Failed to fetch releases from GitHub", e)
             emptyList()
         }
     }

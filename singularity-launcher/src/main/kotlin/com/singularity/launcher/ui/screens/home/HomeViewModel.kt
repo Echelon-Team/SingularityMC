@@ -7,39 +7,51 @@ import com.singularity.launcher.service.news.NewsCache
 import com.singularity.launcher.service.news.NewsRepository
 import com.singularity.launcher.service.news.ReleaseInfo
 import com.singularity.launcher.viewmodel.BaseViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.swing.Swing
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
+
+/**
+ * Sum type for the GitHub-Releases-driven Aktualności feed per spec 4.12.
+ *
+ * Replaces a prior stringly-typed `releasesError: String?` + separate `isLoadingReleases`
+ * + `releases: List<...>` triple whose cardinality admitted invalid combinations (e.g.
+ * loading AND offline simultaneously). Each state now rendered by exactly one HomeScreen
+ * branch; exhaustive `when` over the sealed interface catches new variants at compile time.
+ */
+sealed interface ReleasesState {
+    /** Initial state or active fetch in flight. */
+    data object Loading : ReleasesState
+
+    /** User launched with `--offline` — feed intentionally disabled. */
+    data object Offline : ReleasesState
+
+    /** Repo/cache dependencies not wired (production bug or legacy ctor used). */
+    data object Unavailable : ReleasesState
+
+    /** Network / API / parse failure; user sees retry-implicit error message. */
+    data object FetchFailed : ReleasesState
+
+    /** Successful fetch — `releases` may be empty if repo has no stable releases yet. */
+    data class Loaded(val releases: List<ReleaseInfo>) : ReleasesState
+}
 
 /**
  * State dla HomeScreen.
  *
- * **Legacy news/NewsItem fields** (`news`, `isLoadingNews`, `newsError`, `NewsItem`) are
- * scheduled for removal in **Task 1.9** — HomeScreen refactor will consume `releases`
- * directly. Marked @Deprecated below to generate IDE warnings until removal.
- *
- * **releases / releasesError:** GitHub Releases feed per spec 4.12 — 3 latest stable
- * releases fetched via [NewsRepository]. `releasesError` distinguishes failure modes:
- * - null = releases valid (empty or populated)
- * - "offline" = user launched with --offline flag
- * - "unavailable" = repo/cache wiring missing (dev/test)
- * - "fetch-failed" = network/API error (repo returned empty via contract)
+ * `releasesState` encodes the five mutually-exclusive Aktualności display states — see
+ * [ReleasesState] kdoc.
  */
 data class HomeState(
     val lastPlayedInstance: LastPlayedInfo? = null,
-    @Deprecated("Removed in Task 1.9 — use releases instead")
-    val news: List<NewsItem> = emptyList(),
-    @Deprecated("Removed in Task 1.9 — use isLoadingReleases")
-    val isLoadingNews: Boolean = false,
-    @Deprecated("Removed in Task 1.9 — use releasesError")
-    val newsError: String? = null,
-    val releases: List<ReleaseInfo> = emptyList(),
-    val isLoadingReleases: Boolean = false,
-    val releasesError: String? = null,
+    // Default is Unavailable (production-safe sentinel for "no wiring yet"). loadReleases()
+    // explicitly sets Loading before launching the fetch coroutine, so real fetch flow is
+    // unaffected; this default prevents tests / direct HomeState() instantiation from
+    // appearing to have an infinite loading spinner.
+    val releasesState: ReleasesState = ReleasesState.Unavailable,
 )
 
 /**
@@ -54,19 +66,12 @@ data class LastPlayedInfo(
     val type: InstanceType
 )
 
-@Deprecated("Removed in Task 1.9 — replaced by ReleaseInfo from GitHub")
-@Serializable
-data class NewsItem(
-    val id: String,
-    val title: String,
-    val description: String,
-    val imageUrl: String? = null,
-    val publishedAt: String,
-    val url: String? = null
-)
-
 /**
- * Format "Survival World — MC 1.20.1 Enhanced — grane 2h temu"
+ * Format "Survival World — MC 1.20.1 Enhanced — grane 2h temu".
+ *
+ * NOTE: time-ago strings are intentionally Polish-only for MVP (matches hardcoded
+ * `polishMonths` in HomeScreen.kt); i18n-aware rephrasing is a future refactor when EN
+ * users are on the roadmap.
  */
 fun formatLastPlayedSubtitle(
     name: String,
@@ -102,8 +107,6 @@ class HomeViewModel(
 
     init {
         loadLastPlayed()
-        @Suppress("DEPRECATION")
-        loadNews()
         loadReleases()
     }
 
@@ -122,48 +125,32 @@ class HomeViewModel(
                     )
                 }
                 updateState { it.copy(lastPlayedInstance = info) }
+            } catch (e: CancellationException) {
+                throw e  // cooperate with structured concurrency — scope cancel must propagate
             } catch (e: Exception) {
+                logger.warn("Failed to load last played instance", e)
                 updateState { it.copy(lastPlayedInstance = null) }
             }
         }
-    }
-
-    @Deprecated("Removed in Task 1.9 — replaced by GitHub Releases via loadReleases")
-    private fun loadNews() {
-        updateState { it.copy(isLoadingNews = true, newsError = null) }
-        viewModelScope.launch {
-            try {
-                val newsList = loadBundledNews()
-                updateState { it.copy(news = newsList, isLoadingNews = false) }
-            } catch (e: Exception) {
-                updateState { it.copy(isLoadingNews = false, newsError = e.message) }
-            }
-        }
-    }
-
-    private fun loadBundledNews(): List<NewsItem> {
-        val stream = javaClass.getResourceAsStream("/news/news.json")
-            ?: return emptyList()
-        val content = stream.bufferedReader().use { it.readText() }
-        return Json { ignoreUnknownKeys = true }.decodeFromString(content)
     }
 
     /**
      * Fetch latest stable releases from GitHub Releases API per spec 4.12.
      *
      * Strategy:
-     * 1. [OfflineMode] enabled → `releasesError = "offline"`, empty list.
-     * 2. [newsRepository] or [newsCache] absent (null) → `releasesError = "unavailable"`,
-     *    empty list. Production wiring bug OR legacy 2-arg ctor; logged as warn.
-     * 3. Cache hit → use cached value, clear error.
+     * 1. [OfflineMode] enabled → [ReleasesState.Offline].
+     * 2. [newsRepository] or [newsCache] absent (null) → [ReleasesState.Unavailable].
+     *    Production wiring bug OR legacy 2-arg ctor; logged as warn.
+     * 3. Cache hit → [ReleasesState.Loaded] with cached value.
      * 4. Cache miss → fetch via repository (with defense try/catch), populate cache on
-     *    non-empty success. Empty fetch NOT cached (allows retry on next call).
+     *    non-empty success. Empty fetch NOT cached (allows retry on next call) and reports
+     *    [ReleasesState.FetchFailed].
      *
      * Private by design — called from [init] only. UI-driven refresh not yet in scope.
      */
     private fun loadReleases() {
         if (OfflineMode.isEnabled()) {
-            updateState { it.copy(releases = emptyList(), isLoadingReleases = false, releasesError = "offline") }
+            updateState { it.copy(releasesState = ReleasesState.Offline) }
             return
         }
         if (newsRepository == null || newsCache == null) {
@@ -172,30 +159,32 @@ class HomeViewModel(
                 newsRepository != null,
                 newsCache != null,
             )
-            updateState { it.copy(releases = emptyList(), isLoadingReleases = false, releasesError = "unavailable") }
+            updateState { it.copy(releasesState = ReleasesState.Unavailable) }
             return
         }
 
         newsCache.get()?.let { cached ->
-            updateState { it.copy(releases = cached, isLoadingReleases = false, releasesError = null) }
+            updateState { it.copy(releasesState = ReleasesState.Loaded(cached)) }
             return
         }
 
-        updateState { it.copy(isLoadingReleases = true, releasesError = null) }
+        updateState { it.copy(releasesState = ReleasesState.Loading) }
         viewModelScope.launch {
-            // Defense-in-depth: NewsRepository contract guarantees empty-on-failure, but guard
-            // against future refactor that could leak exceptions.
+            // Defense-in-depth: NewsRepository contract guarantees empty-on-failure and
+            // rethrows CancellationException, but guard against future refactor bugs.
             val fetched = try {
                 newsRepository.fetchLatestReleases(limit = 3)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                logger.warn("Unexpected exception from NewsRepository: {}", e.message)
+                logger.warn("Unexpected exception from NewsRepository", e)
                 emptyList()
             }
             if (fetched.isNotEmpty()) {
                 newsCache.put(fetched)  // don't cache empty — next load retries
-                updateState { it.copy(releases = fetched, isLoadingReleases = false, releasesError = null) }
+                updateState { it.copy(releasesState = ReleasesState.Loaded(fetched)) }
             } else {
-                updateState { it.copy(releases = emptyList(), isLoadingReleases = false, releasesError = "fetch-failed") }
+                updateState { it.copy(releasesState = ReleasesState.FetchFailed) }
             }
         }
     }

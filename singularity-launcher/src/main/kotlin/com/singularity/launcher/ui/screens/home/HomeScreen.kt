@@ -1,7 +1,6 @@
 package com.singularity.launcher.ui.screens.home
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +26,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -39,30 +39,31 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalUriHandler
 import com.singularity.launcher.config.LocalI18n
+import com.singularity.launcher.service.news.ReleaseInfo
 import com.singularity.launcher.ui.theme.LocalExtraPalette
-import java.time.Instant
-import java.time.ZoneId
+import org.slf4j.LoggerFactory
+
+private val logger = LoggerFactory.getLogger("com.singularity.launcher.ui.screens.home.HomeScreen")
 
 /**
  * HomeScreen — pierwszy ekran launchera.
  *
  * **Layout (pixel-perfect z prototypu index.html:2005-2047):**
  * 1. home-continue Card — horizontal Row { gradient IconBox 56dp + Column(title+subtitle) + "▶ GRAJ" button }
- *    (NIE headline "SingularityMC" na górze — dubluje sidebar logo z Task 3)
  * 2. "Aktualności" Text (titleLarge)
- * 3. news-grid LazyVerticalGrid(GridCells.Adaptive(320.dp)) z NewsCard items
+ * 3. news-grid LazyVerticalGrid(GridCells.Adaptive(320.dp)) z NewsCard items — 3 latest
+ *    stable GitHub releases per spec 4.12
  *
- * NewsCard: banner placeholder 100dp + Column(title + description + date)
+ * NewsCard: version badge + date + changelog (truncated markdown) + "Zobacz na GitHub" button.
  *
- * **Dependencies (forward ref):**
- * - `HomeViewModel(InstanceManager)` — Task 26 dostarcza InstanceManager
- * - `LocalNavigator` — Task 1 NavigationViewModel
- * - `LocalI18n` — Task 6 I18n
- * - `LocalExtraPalette` — Task 2 theme
- *
- * ViewModel lifecycle przez `DisposableEffect(viewModel) { onDispose { viewModel.onCleared() } }`
- * — fix C3 performance-v1 leak (wire w Task 32 App.kt przez `rememberViewModel` helper).
+ * **News states** — exhaustive `when` over [ReleasesState]:
+ * - [ReleasesState.Loading] → CircularProgressIndicator
+ * - [ReleasesState.Offline] → "Tryb offline — aktualności niedostępne"
+ * - [ReleasesState.Unavailable] → "Aktualności tymczasowo niedostępne" (dev wiring gap)
+ * - [ReleasesState.FetchFailed] → "Nie udało się pobrać aktualności" (retry implicit on next load)
+ * - [ReleasesState.Loaded] → grid of NewsCards, or "brak aktualności" if empty
  */
 @Composable
 fun HomeScreen(
@@ -100,8 +101,8 @@ fun HomeScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        when {
-            state.isLoadingNews -> {
+        when (val rs = state.releasesState) {
+            ReleasesState.Loading -> {
                 Box(
                     modifier = Modifier.fillMaxWidth().padding(32.dp),
                     contentAlignment = Alignment.Center
@@ -109,26 +110,39 @@ fun HomeScreen(
                     CircularProgressIndicator()
                 }
             }
-            state.newsError != null -> {
+            ReleasesState.Offline -> {
                 Text(
-                    text = "${i18n["home.news.error"]}: ${state.newsError}",
-                    color = extra.statusError
+                    text = i18n["home.news.offline"],
+                    color = extra.textMuted,
                 )
             }
-            state.news.isEmpty() -> {
+            ReleasesState.Unavailable -> {
                 Text(
-                    text = i18n["home.news.empty"],
-                    color = extra.textMuted
+                    text = i18n["home.news.unavailable"],
+                    color = extra.textMuted,
                 )
             }
-            else -> {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 320.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    items(state.news, key = { it.id }) { news ->
-                        NewsCard(news)
+            ReleasesState.FetchFailed -> {
+                Text(
+                    text = i18n["home.news.fetch_failed"],
+                    color = extra.statusError,
+                )
+            }
+            is ReleasesState.Loaded -> {
+                if (rs.releases.isEmpty()) {
+                    Text(
+                        text = i18n["home.news.empty"],
+                        color = extra.textMuted
+                    )
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        items(rs.releases, key = { it.tagName }) { release ->
+                            NewsCard(release)
+                        }
                     }
                 }
             }
@@ -137,11 +151,7 @@ fun HomeScreen(
 }
 
 /**
- * Home continue card — horizontal row (NIE duży button).
- *
- * Layout (index.html:2007-2018):
- * Card(clickable) { Row { gradient IconBox + Column(title+subtitle) + GRAJ button } }
- * Gdy brak lastPlayed: empty state z sugestią utworzenia instancji.
+ * Home continue card — horizontal row.
  */
 @Composable
 private fun HomeContinueCard(
@@ -151,221 +161,187 @@ private fun HomeContinueCard(
     val extra = LocalExtraPalette.current
     val i18n = LocalI18n.current
 
-    if (lastPlayed != null) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onContinueClick() },
-            colors = CardDefaults.cardColors(containerColor = extra.cardBg)
-        ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Gradient icon box
-                Box(
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(Color(0xFF2F195F), Color(0xFF472147))
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = null,
-                        tint = extra.textPrimary,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
-
-                Spacer(Modifier.width(16.dp))
-
-                // Title + subtitle
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = i18n["home.continue.title"],
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = extra.textPrimary
-                    )
-                    Text(
-                        text = formatLastPlayedSubtitle(
-                            name = lastPlayed.instanceName,
-                            version = lastPlayed.minecraftVersion,
-                            type = lastPlayed.type,
-                            lastPlayedMs = lastPlayed.lastPlayedTimestamp
-                        ),
-                        fontSize = 13.sp,
-                        color = extra.textMuted
-                    )
-                }
-
-                Spacer(Modifier.width(16.dp))
-
-                // PLAY button — primary gradient (prototyp button-play 135deg)
-                Box(
-                    modifier = Modifier
-                        .height(48.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(extra.playGradientStart, extra.playGradientEnd)
-                            )
-                        )
-                        .clickable(onClick = onContinueClick)
-                        .padding(horizontal = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = i18n["action.play"],
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-                }
-            }
-        }
-    } else {
-        // Empty state — brak ostatnio granej instancji
-        val navigator = com.singularity.launcher.ui.navigation.LocalNavigator.current
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = extra.cardBg)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(24.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = i18n["home.continue.title"],
-                        style = MaterialTheme.typography.titleMedium,
-                        color = extra.textPrimary
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = i18n["home.continue.none"],
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = extra.textMuted
-                    )
-                }
-
-                Spacer(Modifier.width(16.dp))
-
-                // "+ Nowa instancja" button z gradientem (nie PLAY bo nie ma czego grać)
-                Box(
-                    modifier = Modifier
-                        .height(48.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            Brush.linearGradient(
-                                colors = listOf(extra.playGradientStart, extra.playGradientEnd)
-                            )
-                        )
-                        .clickable {
-                            navigator.navigateTo(com.singularity.launcher.ui.navigation.Screen.INSTANCES)
-                        }
-                        .padding(horizontal = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = i18n["instances.new_instance"],
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
- * NewsCard — banner placeholder 100dp + body (title + description + date).
- * Prototyp index.html:2023-2030.
- */
-@Composable
-private fun NewsCard(news: NewsItem) {
-    val extra = LocalExtraPalette.current
-
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = extra.cardBg)
     ) {
-        Column {
-            // Banner placeholder (lub future: AsyncImage z news.imageUrl)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Icon placeholder (gradient 56dp)
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(100.dp)
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .background(
                         Brush.linearGradient(
                             colors = listOf(
-                                MaterialTheme.colorScheme.surfaceVariant,
-                                MaterialTheme.colorScheme.surface
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)
                             )
                         )
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "banner",
-                    fontSize = 11.sp,
-                    color = extra.textDisabled
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp)
                 )
             }
 
-            // Body
-            Column(modifier = Modifier.padding(16.dp)) {
+            Spacer(Modifier.width(16.dp))
+
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                val title = lastPlayed?.instanceName ?: i18n["home.continue.empty.title"]
                 Text(
-                    text = news.title,
-                    fontSize = 14.sp,
+                    text = title,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    color = extra.textPrimary,
-                    maxLines = 2
+                    color = extra.textPrimary
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
+                val subtitle = if (lastPlayed != null) {
+                    formatLastPlayedSubtitle(
+                        name = lastPlayed.instanceName,
+                        version = lastPlayed.minecraftVersion,
+                        type = lastPlayed.type,
+                        lastPlayedMs = lastPlayed.lastPlayedTimestamp
+                    )
+                } else {
+                    i18n["home.continue.empty.subtitle"]
+                }
                 Text(
-                    text = news.description,
-                    fontSize = 12.sp,
-                    color = extra.textSecondary,
-                    maxLines = 3
+                    text = subtitle,
+                    fontSize = 13.sp,
+                    color = extra.textSecondary
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = formatPublishedDate(news.publishedAt),
-                    fontSize = 11.sp,
-                    color = extra.textMuted
+            }
+
+            Spacer(Modifier.width(16.dp))
+
+            Button(
+                onClick = onContinueClick,
+                enabled = lastPlayed != null,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
                 )
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(text = i18n["home.continue.play"], fontWeight = FontWeight.Bold)
             }
         }
     }
 }
 
 /**
- * Format ISO-8601 publishedAt jako "DD month YYYY" (np. "20 marca 2026").
+ * NewsCard — renders a single GitHub [ReleaseInfo] in the Aktualności grid.
+ *
+ * Layout: version badge + "Stable" chip + date on top row,
+ *         changelog markdown (truncated to 300 chars) in body,
+ *         "Zobacz na GitHub" TextButton footer (opens in system browser via
+ *         [LocalUriHandler]).
  */
-private fun formatPublishedDate(iso: String): String = try {
-    val instant = Instant.parse(iso)
-    val localDate = instant.atZone(ZoneId.systemDefault()).toLocalDate()
-    val polishMonths = listOf(
-        "stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca",
-        "lipca", "sierpnia", "września", "października", "listopada", "grudnia"
-    )
-    "${localDate.dayOfMonth} ${polishMonths[localDate.monthValue - 1]} ${localDate.year}"
-} catch (e: Exception) {
-    iso  // fallback: raw ISO
+@Composable
+private fun NewsCard(release: ReleaseInfo) {
+    val extra = LocalExtraPalette.current
+    val i18n = LocalI18n.current
+    val uriHandler = LocalUriHandler.current
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = extra.cardBg),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Top row: version + stable tag + date
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = release.displayVersion,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = extra.textPrimary,
+                )
+                Spacer(Modifier.width(8.dp))
+                StableBadge()
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = formatReleaseDate(release),
+                    fontSize = 11.sp,
+                    color = extra.textMuted,
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Changelog body (markdown truncated; proper MD rendering = future enhancement).
+            // TODO(markdown): when MD rendering lands, replace plain .take(300) with an
+            //   AST-aware truncator — cutting mid-link or mid-bold will corrupt rendering.
+            Text(
+                text = if (release.changelog.length > 300) release.changelog.take(300) + "…" else release.changelog,
+                fontSize = 12.sp,
+                color = extra.textSecondary,
+                maxLines = 6,
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            // "Zobacz na GitHub" link — opens in system browser via Compose Multiplatform's
+            // LocalUriHandler. Handles Linux xdg-open fallback and headless edge cases that
+            // raw java.awt.Desktop.browse misses. openUri throws IllegalArgumentException
+            // on unhandled URIs — we log and swallow so the UI stays responsive.
+            TextButton(onClick = {
+                runCatching { uriHandler.openUri(release.htmlUrl) }
+                    .onFailure { logger.warn("Failed to open release URL: {}", release.htmlUrl, it) }
+            }) {
+                Text(
+                    text = i18n["home.news.view_github"],
+                    fontSize = 11.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StableBadge() {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(
+            text = "Stable",
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+// Polish month names in genitive form (used in date-of-month phrases like "15 kwietnia 2026").
+// Intentionally hardcoded rather than DateTimeFormatter.ofPattern("d LLLL yyyy", Locale("pl")):
+// JDK's Polish locale data returns nominative "kwiecień" instead of expected genitive "kwietnia"
+// on standalone `LLLL` pattern, and behavior regressed across recent JDK versions
+// (JDK-4984277, adoptium/adoptium-support#953). Hardcoded array is intentional and reliable.
+private val polishMonths = listOf(
+    "stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca",
+    "lipca", "sierpnia", "września", "października", "listopada", "grudnia",
+)
+
+/** "15 kwietnia 2026" format using Polish month names (display stays Polish regardless of locale). */
+private fun formatReleaseDate(release: ReleaseInfo): String {
+    val date = release.publishedLocalDate
+    return "${date.dayOfMonth} ${polishMonths[date.monthValue - 1]} ${date.year}"
 }
