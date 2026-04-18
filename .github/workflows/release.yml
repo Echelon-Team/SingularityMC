@@ -129,6 +129,15 @@ jobs:
             auto-update/target
           key: cargo-${{ matrix.os }}-${{ hashFiles('auto-update/Cargo.toml', 'auto-update/Cargo.lock') }}
 
+      # Exec bits — git z Windows checkout nie przechowuje Unix exec
+      # bit, więc ./gradlew + bash scripts są `Permission denied` na
+      # ubuntu-latest. `chmod +x` idempotentne, tania operacja.
+      - name: Restore exec bits on Unix scripts
+        shell: bash
+        run: |
+          chmod +x gradlew
+          chmod +x scripts/*.sh || true  # katalog może nie mieć .sh, nie fail
+
       - name: Build launcher (createDistributable)
         shell: bash
         run: ./gradlew :singularity-launcher:createDistributable

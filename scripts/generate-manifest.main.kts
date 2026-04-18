@@ -22,15 +22,26 @@
 
 @file:DependsOn("org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.6.3")
 
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.security.MessageDigest
 import java.time.Instant
 import kotlin.streams.toList
+
+// Script NIE używa @Serializable data classes — `.main.kts` CLI runtime
+// nie ma kotlinx-serialization compiler plugin loadowanego, więc reflective
+// `encodeToString(manifest)` z @Serializable data class wybucha
+// `SerializationException: Serializer for class 'Manifest' is not found`
+// (verified w CI run #24613106653). `buildJsonObject` + `buildJsonArray`
+// DSL działa bez plugin — operuje na kotlinx-serialization-json primitives
+// bez potrzeby compile-time-generated serializers.
 
 if (args.size < 4) {
     System.err.println("Usage: generate-manifest.main.kts <launcherDir> <osSuffix> <version> <outputPath>")
@@ -52,23 +63,13 @@ require(version.isNotBlank()) { "version nie może być pusty" }
 // surowymi nazwami dla shared.
 val repoBaseUrl = "https://github.com/Echelon-Team/SingularityMC/releases/download/v$version"
 
-@Serializable
+// Plain data carriers — bez @Serializable. Konwersja do JsonObject
+// odbywa się w `fileEntry` / bloku budowania manifestu niżej.
 data class FileEntry(
     val path: String,
     val url: String,
     val size: Long,
     val sha256: String,
-)
-
-@Serializable
-data class Manifest(
-    val version: String,
-    val os: String,
-    val releasedAt: String,
-    val minAutoUpdateVersion: String,
-    val launcherExecutable: String,
-    val changelog: String,
-    val files: List<FileEntry>,
 )
 
 fun sha256(path: Path): String {
@@ -128,25 +129,37 @@ val launcherExecutable = when (osSuffix) {
 // annotation / release notes), fallback na generic line.
 val changelog = System.getenv("RELEASE_CHANGELOG") ?: "- Update to version $version"
 
-val manifest = Manifest(
-    version = version,
-    os = osSuffix,
-    releasedAt = Instant.now().toString(),
+// Bezpośrednio buduj JsonObject reprezentujący manifest. Pola zachowują
+// camelCase match ze schematem `auto-update/src/manifest.rs::Manifest`
+// (`#[serde(rename_all = "camelCase")]`). Kolejność pól wynikowego JSON
+// ma być identyczna jak w Rust struct: version, os, releasedAt,
+// minAutoUpdateVersion, launcherExecutable, changelog, files.
+val manifestJson: JsonObject = buildJsonObject {
+    put("version", version)
+    put("os", osSuffix)
+    put("releasedAt", Instant.now().toString())
     // Min auto-update version który potrafi zainstalować ten manifest.
-    // Bumpnij gdy zmieniasz manifest schema (breaking change) albo
-    // download pipeline semantics. Wartość TU MUSI matchować
-    // `auto-update/Cargo.toml::[package].version` dla aktualnie
-    // wydawanych builds auto-update — inaczej freshly-built
+    // Wartość MUSI matchować `auto-update/Cargo.toml::[package].version`
+    // dla aktualnie wydawanych builds — inaczej freshly-built
     // auto-update binary zobaczy remote manifest jako "too old" i
     // wpadnie w FatalError na każdym userze. Bump oba w tym samym
     // commit.
-    minAutoUpdateVersion = "1.0.0",
-    launcherExecutable = launcherExecutable,
-    changelog = changelog,
-    files = files,
-)
+    put("minAutoUpdateVersion", "1.0.0")
+    put("launcherExecutable", launcherExecutable)
+    put("changelog", changelog)
+    put("files", buildJsonArray {
+        files.forEach { e ->
+            add(buildJsonObject {
+                put("path", e.path)
+                put("url", e.url)
+                put("size", e.size)
+                put("sha256", e.sha256)
+            })
+        }
+    })
+}
 
 val json = Json { prettyPrint = true }
-Files.writeString(outputPath, json.encodeToString(manifest))
+Files.writeString(outputPath, json.encodeToString(JsonObject.serializer(), manifestJson))
 
 println("Wrote manifest to $outputPath (${files.size} files)")
