@@ -91,11 +91,18 @@ pub const GITHUB_API_BASE_URL_DEFAULT: &str = "https://api.github.com";
 /// flicker on fast connections where GitHub returns in <50ms.
 const CHECKING_MIN_MS: u64 = 500;
 
-/// NoInternet retry cadence + cap. After exhausting retries, if a local
-/// manifest exists the user is offered offline mode; otherwise the flow
-/// transitions to FatalError.
+/// Base retry cadence between consecutive auto-retry ticks. Production
+/// default; used as the "retry delays enabled" flag (0 = skip sleeps,
+/// tests). Actual per-iteration wait comes from [`backoff_floor_secs`].
 const RETRY_INTERVAL_SECS: u32 = 30;
-const MAX_API_RETRIES: u32 = 3;
+
+/// Number of failed API attempts before the state machine transitions
+/// from `NoInternet` → `OfflineAvailable` (if local install exists) or
+/// `FatalError` (if not). Matches spec 4.x "after a few tries, if
+/// there's a local install offer Tryb offline; else it's fatal".
+/// Kept as a crate-private const so tests can observe the exact
+/// threshold without the transition becoming a tuning knob.
+const API_FAILURES_BEFORE_OFFLINE_PROMPT: u32 = 3;
 
 /// Detect the current platform's OS target for manifest selection.
 /// Unsupported targets are rejected at compile time by the `compile_error!`
@@ -183,13 +190,14 @@ pub struct RunUpdateFlowConfig {
     /// must go through [`RunUpdateFlowConfig::new`] + the `with_*`
     /// builder methods.
     pub github_base_url: String,
-    /// Number of seconds to wait between API retries in the NoInternet loop.
-    /// Production: 30. Tests: 0 to advance through retries in a handful of
-    /// runtime ticks.
+    /// Acts as a delays-enabled flag for the auto-retry loops. Production
+    /// is nonzero (the exact value is unused — actual per-iteration wait
+    /// comes from the [`backoff_floor_secs`] ladder); tests set it to
+    /// `0` to skip all retry sleeps so scenarios resolve in a handful of
+    /// runtime ticks. Kept as a `u32` rather than a `bool` so future
+    /// knobs (e.g. "minimum floor add") can repurpose it without a
+    /// breaking rename.
     pub retry_interval_secs: u32,
-    /// How many retries to attempt before giving up and surfacing
-    /// OfflineAvailable / FatalError.
-    pub max_api_retries: u32,
     /// Floor on the "Checking..." screen duration so it doesn't flash-and-
     /// disappear on fast networks. Tests drop this to 0.
     pub checking_min_ms: u64,
@@ -206,7 +214,6 @@ impl Default for RunUpdateFlowConfig {
         Self {
             github_base_url: GITHUB_API_BASE_URL_DEFAULT.to_string(),
             retry_interval_secs: RETRY_INTERVAL_SECS,
-            max_api_retries: MAX_API_RETRIES,
             checking_min_ms: CHECKING_MIN_MS,
             // Tests pick `En` — production overrides via `with_strings`
             // after `resolve_lang()` picks the concrete bundle.
@@ -235,13 +242,6 @@ impl RunUpdateFlowConfig {
     #[must_use]
     pub fn with_retry_interval_secs(mut self, secs: u32) -> Self {
         self.retry_interval_secs = secs;
-        self
-    }
-
-    /// Override the retry cap. Production: 3.
-    #[must_use]
-    pub fn with_max_api_retries(mut self, n: u32) -> Self {
-        self.max_api_retries = n;
         self
     }
 
@@ -284,8 +284,10 @@ pub async fn run_update_flow_with_config(
         GitHubClient::with_base_url(&cfg.github_base_url, REPO_OWNER, REPO_NAME)?;
     let AttemptOutcome::Succeeded(outcome) = match github.latest_release(channel).await {
         Ok(release) => {
-            process_release_or_park(install_dir, github, release, os, state, user_rx, &cfg)
-                .await?
+            process_release_or_park(
+                install_dir, github, release, channel, os, state, user_rx, &cfg,
+            )
+            .await?
         }
         Err(e) => {
             handle_api_failure(install_dir, github, channel, os, state, user_rx, &cfg, e)
@@ -305,63 +307,126 @@ async fn handle_api_failure(
     cfg: &RunUpdateFlowConfig,
     original_err: UpdaterError,
 ) -> Result<AttemptOutcome> {
-    log::warn!("GitHub API failed: {original_err}; entering retry loop");
+    log::warn!("GitHub API failed: {original_err}; entering auto-retry loop");
 
-    for attempt in 0..cfg.max_api_retries {
-        set_state(
-            &state,
-            UiState::NoInternet {
-                retry_in_seconds: cfg.retry_interval_secs,
-            },
-        );
-        tokio::time::sleep(Duration::from_secs(u64::from(cfg.retry_interval_secs))).await;
-        match github.latest_release(channel).await {
-            Ok(release) => {
-                return process_release_or_park(
-                    install_dir,
-                    github,
-                    release,
-                    os,
-                    state,
-                    user_rx,
-                    cfg,
-                )
-                .await;
+    let local = manifest::load_local(&install_dir);
+    let mut iteration: u32 = 0;
+
+    loop {
+        iteration = iteration.saturating_add(1);
+        let cooldown_secs = u32::try_from(backoff_floor_secs(iteration)).unwrap_or(u32::MAX);
+
+        // Transition rule — spec 4.x opcja 2:
+        //  - first `API_FAILURES_BEFORE_OFFLINE_PROMPT` (3) retries stay
+        //    in `NoInternet` regardless of has_offline — UI keeps the
+        //    user in "something's wrong, trying again" framing without
+        //    prematurely offering the offline escape hatch.
+        //  - after 3 failures + local exists → `OfflineAvailable` (we
+        //    keep auto-retrying in the BACKGROUND so the flow resumes
+        //    automatically if the API comes back; user can also just
+        //    click Tryb offline to launch the local install directly).
+        //  - after 3 failures + NO local → `FatalError` (no recovery
+        //    path — first install on a broken network). Per Mateusz:
+        //    "opcja 2: nie ma local install → wywala fatal error".
+        if iteration > API_FAILURES_BEFORE_OFFLINE_PROMPT && local.is_none() {
+            set_state(
+                &state,
+                UiState::FatalError {
+                    message: format!("{original_err}"),
+                },
+            );
+            return Err(original_err);
+        }
+
+        let ui_state =
+            if iteration <= API_FAILURES_BEFORE_OFFLINE_PROMPT || local.is_none() {
+                UiState::NoInternet {
+                    retry_in_seconds: cooldown_secs,
+                }
+            } else {
+                UiState::OfflineAvailable {
+                    retry_in_seconds: cooldown_secs,
+                }
+            };
+        set_state(&state, ui_state);
+
+        let sleep_duration = if cfg.retry_interval_secs == 0 {
+            Duration::ZERO
+        } else {
+            backoff_floor_duration_with_jitter(iteration)
+        };
+
+        // Race the cooldown sleep against a user click. Whichever fires
+        // first wins the turn: timer expiry = try the API again; user
+        // action = dispatch to offline / fatal / channel-close. This is
+        // what makes the parked states auto-recover from the user's
+        // POV — if the API comes back during the cooldown, the tick
+        // fires, the flow resumes, the user sees the update progress
+        // without ever having clicked a button.
+        tokio::select! {
+            _ = tokio::time::sleep(sleep_duration) => {
+                match github.latest_release(channel).await {
+                    Ok(release) => {
+                        return process_release_or_park(
+                            install_dir, github, release, channel, os, state, user_rx, cfg,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "auto-retry iteration {iteration} failed: {e}; scheduling next tick"
+                        );
+                        // fall through — next loop iteration
+                    }
+                }
             }
-            Err(e) => log::warn!(
-                "retry {} of {} failed: {e}",
-                attempt + 1,
-                cfg.max_api_retries
-            ),
+            user = user_rx.recv() => {
+                return dispatch_user_action_with_local(
+                    user,
+                    local.as_ref(),
+                    &state,
+                    cfg,
+                );
+            }
         }
     }
+}
 
-    // Exhausted retries. If a local manifest exists, surface offline
-    // mode and park waiting for the user's Offline click. T2.11f7 will
-    // add a background auto-retry that races this park so the flow
-    // resumes on its own when the API comes back — for now the only
-    // exits are: user clicks Offline, or closes the window (channel
-    // close => `recv` returns None => fatal).
-    if let Some(local) = manifest::load_local(&install_dir) {
-        set_state(&state, UiState::OfflineAvailable);
-        match user_rx.recv().await {
-            Some(UserAction::Offline) => Ok(AttemptOutcome::Succeeded(
-                FlowOutcome::UserRequestedOffline(local.launcher_executable),
-            )),
-            None => Err(UpdaterError::NotFound(
-                "UI action channel closed before user decision".to_string(),
-            )),
+/// Interpret a `UserAction` (or a `None` from channel close) landing in
+/// one of the parked retry loops. Both `handle_api_failure` and
+/// `park_on_download_failure` arrive at the same fork after their
+/// `select!` — Offline click needs a local install, channel close is
+/// a hard stop. Pulled out to keep the retry-loop bodies narrow.
+fn dispatch_user_action_with_local(
+    action: Option<UserAction>,
+    local: Option<&crate::manifest::Manifest>,
+    state: &Arc<Mutex<UiState>>,
+    cfg: &RunUpdateFlowConfig,
+) -> Result<AttemptOutcome> {
+    match action {
+        Some(UserAction::Offline) => {
+            if let Some(local) = local {
+                Ok(AttemptOutcome::Succeeded(
+                    FlowOutcome::UserRequestedOffline(local.launcher_executable.clone()),
+                ))
+            } else {
+                // Offline click arriving despite the UI hiding the
+                // button when `has_offline == false` — bug or a racy
+                // click landing between state transitions. Surface as
+                // FatalError with the localized message.
+                let msg = cfg.strings.no_offline_install.to_string();
+                set_state(
+                    state,
+                    UiState::FatalError {
+                        message: msg.clone(),
+                    },
+                );
+                Err(UpdaterError::NotFound(msg))
+            }
         }
-    } else {
-        // First run + no internet = fatal. Surface the message; caller
-        // will also log::error the error.
-        set_state(
-            &state,
-            UiState::FatalError {
-                message: format!("{original_err}"),
-            },
-        );
-        Err(original_err)
+        None => Err(UpdaterError::NotFound(
+            "UI action channel closed before user decision".to_string(),
+        )),
     }
 }
 
@@ -382,6 +447,7 @@ async fn process_release_or_park(
     install_dir: PathBuf,
     github: GitHubClient,
     release: Release,
+    channel: Channel,
     os: OsTarget,
     state: Arc<Mutex<UiState>>,
     user_rx: &mut mpsc::Receiver<UserAction>,
@@ -389,7 +455,9 @@ async fn process_release_or_park(
 ) -> Result<AttemptOutcome> {
     match process_release(install_dir.clone(), github, release, os, Arc::clone(&state)).await {
         Ok(launcher_rel) => Ok(AttemptOutcome::Succeeded(FlowOutcome::Updated(launcher_rel))),
-        Err(e) => park_on_download_failure(install_dir, state, user_rx, cfg, e).await,
+        Err(e) => {
+            park_on_download_failure(install_dir, channel, os, state, user_rx, cfg, e).await
+        }
     }
 }
 
@@ -404,39 +472,84 @@ async fn process_release_or_park(
 /// parking site appears, revisit.
 async fn park_on_download_failure(
     install_dir: PathBuf,
+    channel: Channel,
+    os: OsTarget,
     state: Arc<Mutex<UiState>>,
     user_rx: &mut mpsc::Receiver<UserAction>,
     cfg: &RunUpdateFlowConfig,
     original_err: UpdaterError,
 ) -> Result<AttemptOutcome> {
-    log::warn!("release processing failed: {original_err}; offering Offline");
+    log::warn!("release processing failed: {original_err}; entering download auto-retry");
     let local = manifest::load_local(&install_dir);
     let has_offline = local.is_some();
-    set_state(&state, UiState::DownloadFailed { has_offline });
-    match user_rx.recv().await {
-        Some(UserAction::Offline) => {
-            if let Some(local) = local {
-                Ok(AttemptOutcome::Succeeded(FlowOutcome::UserRequestedOffline(
-                    local.launcher_executable,
-                )))
-            } else {
-                // Offline click arriving despite the UI hiding the
-                // button — bug or racy state transition. Surface as
-                // FatalError with the localized message so logs +
-                // user see a consistent story.
-                let msg = cfg.strings.no_offline_install.to_string();
-                set_state(
+    let mut iteration: u32 = 0;
+
+    loop {
+        iteration = iteration.saturating_add(1);
+        let cooldown_secs = u32::try_from(backoff_floor_secs(iteration)).unwrap_or(u32::MAX);
+
+        set_state(
+            &state,
+            UiState::DownloadFailed {
+                retry_in_seconds: cooldown_secs,
+                has_offline,
+            },
+        );
+
+        let sleep_duration = if cfg.retry_interval_secs == 0 {
+            Duration::ZERO
+        } else {
+            backoff_floor_duration_with_jitter(iteration)
+        };
+
+        tokio::select! {
+            _ = tokio::time::sleep(sleep_duration) => {
+                // Tick — re-fetch release (API might have a new version),
+                // re-download, re-install. Full-cycle retry so a transient
+                // CDN hiccup, AV scanner lock, or flaky disk can recover.
+                let github =
+                    GitHubClient::with_base_url(&cfg.github_base_url, REPO_OWNER, REPO_NAME)?;
+                match github.latest_release(channel).await {
+                    Ok(release) => {
+                        match process_release(
+                            install_dir.clone(),
+                            github,
+                            release,
+                            os,
+                            Arc::clone(&state),
+                        )
+                        .await
+                        {
+                            Ok(launcher_rel) => {
+                                return Ok(AttemptOutcome::Succeeded(FlowOutcome::Updated(
+                                    launcher_rel,
+                                )));
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "download auto-retry iteration {iteration} failed: {e}"
+                                );
+                                // next loop iteration
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "download auto-retry iteration {iteration} API fetch failed: {e}"
+                        );
+                        // next loop iteration
+                    }
+                }
+            }
+            user = user_rx.recv() => {
+                return dispatch_user_action_with_local(
+                    user,
+                    local.as_ref(),
                     &state,
-                    UiState::FatalError {
-                        message: msg.clone(),
-                    },
+                    cfg,
                 );
-                Err(UpdaterError::NotFound(msg))
             }
         }
-        None => Err(UpdaterError::NotFound(
-            "UI action channel closed before user decision".to_string(),
-        )),
     }
 }
 
@@ -877,11 +990,15 @@ mod tests {
         // `RunUpdateFlowConfig::default()` is what production
         // `run_update_flow` passes through — pins that any future edit
         // to the `Default` impl surfaces as a test diff, preventing
-        // silent drift of the spec 4.x retry cadence (30 s × 3).
+        // silent drift of spec 4.x values.
         let cfg = RunUpdateFlowConfig::default();
         assert_eq!(cfg.github_base_url, GITHUB_API_BASE_URL_DEFAULT);
         assert_eq!(cfg.retry_interval_secs, RETRY_INTERVAL_SECS);
-        assert_eq!(cfg.max_api_retries, MAX_API_RETRIES);
         assert_eq!(cfg.checking_min_ms, CHECKING_MIN_MS);
+        // `max_api_retries` config knob was removed in T2.11f7 —
+        // the 3-fail threshold is now a crate-private const
+        // (`API_FAILURES_BEFORE_OFFLINE_PROMPT`) so no runtime knob
+        // can diverge from the spec.
+        assert_eq!(API_FAILURES_BEFORE_OFFLINE_PROMPT, 3);
     }
 }

@@ -127,8 +127,14 @@ impl eframe::App for AutoUpdateApp {
                         let _ = open::that(i18n::DISCORD_URL);
                     }
                 }
-                UiState::OfflineAvailable => {
+                UiState::OfflineAvailable { retry_in_seconds } => {
+                    // Network still failing after N auto-retries AND a
+                    // local install exists — user can keep waiting or
+                    // pick Tryb offline. Countdown keeps ticking in the
+                    // background; if the API comes back the flow
+                    // resumes automatically (T2.11f7).
                     ui.label(s.no_internet);
+                    ui.label(i18n::retry_in_seconds_str(self.lang, *retry_in_seconds));
                     ui.horizontal(|ui| {
                         if ui.button(s.help).clicked() {
                             let _ = open::that(i18n::DISCORD_URL);
@@ -140,19 +146,17 @@ impl eframe::App for AutoUpdateApp {
                         }
                     });
                 }
-                UiState::DownloadFailed { has_offline } => {
+                UiState::DownloadFailed {
+                    retry_in_seconds,
+                    has_offline,
+                } => {
+                    // Auto-retry countdown visible; user doesn't click
+                    // Retry — state machine cycles on its own. Offline
+                    // button shown only when a local install is
+                    // actually available to fall back to (T2.11f4).
                     ui.label(s.download_failed);
+                    ui.label(i18n::retry_in_seconds_str(self.lang, *retry_in_seconds));
                     ui.horizontal(|ui| {
-                        // "Retry" button removed in T2.11f6 — the state
-                        // machine auto-retries on the cooldown ladder
-                        // now, so the user never needs to click one.
-                        // T2.11f8 adds unified "Wyjdź" + "Pomoc" buttons
-                        // here so the user can still exit voluntarily.
-                        //
-                        // Offline button only when a local install is
-                        // actually available to fall back to — otherwise
-                        // clicking it drops to FatalError. Fresh
-                        // installs see only Close for now.
                         if *has_offline && ui.button(s.offline_mode).clicked() {
                             if let Some(cb) = &self.on_offline_mode {
                                 cb();

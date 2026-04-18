@@ -55,16 +55,18 @@ use tokio::sync::mpsc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Test-tuned config: zero retry interval + zero checking floor so
-/// scenarios complete in a handful of runtime ticks rather than real
-/// 30 s sleeps. Production callers use `RunUpdateFlowConfig::default()`
-/// which keeps the 30 s × 3 spec values. `max_api_retries` is pinned
-/// explicitly at 3 — tests relying on `up_to_n_times(4)` (initial + 3
-/// retries) would silently break if the default changed.
+/// Test-tuned config: `retry_interval_secs=0` skips every auto-retry
+/// sleep so scenarios resolve in a handful of runtime ticks rather than
+/// real 30 s waits. `checking_min_ms=0` skips the "Checking..." UX
+/// floor. Everything else matches the production `Default`.
+///
+/// The 3-failures-before-offline-prompt threshold used to be a config
+/// knob (`max_api_retries`); T2.11f7 hardcoded it as the crate-private
+/// `API_FAILURES_BEFORE_OFFLINE_PROMPT` const, so tests observe the
+/// same threshold as production without a builder call.
 fn test_config(github_base_url: String) -> RunUpdateFlowConfig {
     RunUpdateFlowConfig::new(github_base_url)
         .with_retry_interval_secs(0)
-        .with_max_api_retries(3)
         .with_checking_min_ms(0)
 }
 
@@ -258,7 +260,7 @@ async fn exhausted_retries_with_local_manifest_offers_offline() {
             if matches!(cur, UiState::NoInternet { .. }) {
                 seen_no_internet = true;
             }
-            if matches!(cur, UiState::OfflineAvailable) {
+            if matches!(cur, UiState::OfflineAvailable { .. }) {
                 break;
             }
         }
@@ -392,7 +394,7 @@ async fn channel_closed_before_user_decision_is_notfound() {
 
     wait_for_state_matching(
         &state,
-        |s| matches!(s, UiState::OfflineAvailable),
+        |s| matches!(s, UiState::OfflineAvailable { .. }),
         "OfflineAvailable",
     )
     .await;
@@ -642,7 +644,7 @@ async fn download_failed_without_local_hides_offline_flag() {
 
     wait_for_state_matching(
         &state,
-        |s| matches!(s, UiState::DownloadFailed { has_offline: false }),
+        |s| matches!(s, UiState::DownloadFailed { has_offline: false, .. }),
         "DownloadFailed{has_offline:false}",
     )
     .await;
@@ -654,6 +656,171 @@ async fn download_failed_without_local_hides_offline_flag() {
         matches!(result, Err(UpdaterError::NotFound(_))),
         "expected NotFound on channel close while parked, got {result:?}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn offline_available_auto_recovers_when_api_returns(
+) {
+    // f7 contract: after 3 failed API attempts with a local install on
+    // disk, state goes to OfflineAvailable AND the retry ladder keeps
+    // ticking in the background. If the API comes back during any
+    // subsequent cooldown, the flow resumes to Downloading → Updated
+    // *without* any user click. A mutation that breaks the `select!`'s
+    // sleep arm (e.g. park on `user_rx.recv()` only) would make the
+    // fallthrough 200 mock never hit — this test fails.
+    let install_dir = tempfile::tempdir().unwrap();
+    seed_local_manifest(install_dir.path(), "launcher/old-app.jar");
+
+    let server = MockServer::start().await;
+    let file_bytes: &[u8] = b"bg-recovery payload";
+    let file_sha = sha256_hex(file_bytes);
+    let file_url = format!("{}/download/launcher-app.jar", server.uri());
+    let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
+
+    // First 3 API calls fail → threshold reached → OfflineAvailable.
+    // 4th (auto-retry tick) returns 200 → flow continues.
+    Mock::given(method("GET"))
+        .and(path(latest_release_path()))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(3)
+        .mount(&server)
+        .await;
+    let r_json = release_json("v0.1.0", &manifest_url);
+    Mock::given(method("GET"))
+        .and(path(latest_release_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r_json))
+        .mount(&server)
+        .await;
+    let m_json = manifest_json(
+        "0.1.0",
+        &[(
+            "launcher/app.jar",
+            &file_url,
+            file_bytes.len() as u64,
+            &file_sha,
+        )],
+    );
+    Mock::given(method("GET"))
+        .and(path("/download/manifest-windows.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/launcher-app.jar"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(file_bytes.to_vec()))
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(Mutex::new(UiState::Checking));
+    let (_user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
+    let cfg = test_config(server.uri());
+
+    // No user click — the flow must auto-recover on its own tick.
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        run_update_flow_with_config(
+            install_dir.path().to_path_buf(),
+            Channel::Stable,
+            OsTarget::Windows,
+            Arc::clone(&state),
+            &mut user_rx,
+            cfg,
+        ),
+    )
+    .await
+    .expect("auto-recovery must complete within 15 s of wall time");
+
+    match result {
+        Ok(FlowOutcome::Updated(launcher_rel)) => {
+            assert_eq!(launcher_rel.as_str(), "launcher/app.jar");
+        }
+        other => panic!(
+            "expected Updated after background auto-retry, got {other:?}"
+        ),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn download_failed_auto_recovers_when_retry_succeeds() {
+    // f7 contract for the download side: process_release failure sets
+    // DownloadFailed, state machine keeps ticking in the background,
+    // when the next tick's re-fetch succeeds the flow resumes to
+    // Updated without a user click. Seed local install so has_offline
+    // is true (off-path matching visible in the state), but the flow
+    // should reach Updated before user has any reason to click
+    // "Tryb offline".
+    let install_dir = tempfile::tempdir().unwrap();
+    seed_local_manifest(install_dir.path(), "launcher/old-app.jar");
+
+    let server = MockServer::start().await;
+    let file_bytes: &[u8] = b"download-recovery payload";
+    let file_sha = sha256_hex(file_bytes);
+    let file_url = format!("{}/download/launcher-app.jar", server.uri());
+    let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
+
+    // Release + manifest always return 200 (API is fine).
+    let r_json = release_json("v0.1.0", &manifest_url);
+    Mock::given(method("GET"))
+        .and(path(latest_release_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r_json))
+        .mount(&server)
+        .await;
+    let m_json = manifest_json(
+        "0.1.0",
+        &[(
+            "launcher/app.jar",
+            &file_url,
+            file_bytes.len() as u64,
+            &file_sha,
+        )],
+    );
+    Mock::given(method("GET"))
+        .and(path("/download/manifest-windows.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
+        .mount(&server)
+        .await;
+    // File download fails exactly DEFAULT_MAX_ATTEMPTS times inside the
+    // Downloader (which itself retries 3× with its own backoff), then
+    // the 4th hit — the second outer-flow iteration kicked off by
+    // park_on_download_failure's auto-tick — lands on the 200 mock.
+    Mock::given(method("GET"))
+        .and(path("/download/launcher-app.jar"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/launcher-app.jar"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(file_bytes.to_vec()))
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(Mutex::new(UiState::Checking));
+    let (_user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
+    let cfg = test_config(server.uri());
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        run_update_flow_with_config(
+            install_dir.path().to_path_buf(),
+            Channel::Stable,
+            OsTarget::Windows,
+            Arc::clone(&state),
+            &mut user_rx,
+            cfg,
+        ),
+    )
+    .await
+    .expect("download auto-recovery must complete within 15 s of wall time");
+
+    match result {
+        Ok(FlowOutcome::Updated(launcher_rel)) => {
+            assert_eq!(launcher_rel.as_str(), "launcher/app.jar");
+        }
+        other => panic!(
+            "expected Updated after download auto-retry, got {other:?}"
+        ),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

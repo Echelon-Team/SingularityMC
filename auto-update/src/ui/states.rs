@@ -29,23 +29,29 @@ pub enum UiState {
     Installing,
     /// Spawning the launcher (final state before process exit).
     Starting,
-    /// Network unreachable / GitHub timed out; state machine retries
-    /// after `retry_in_seconds` countdown.
+    /// Network unreachable / GitHub timed out; state machine auto-retries
+    /// on the cooldown ladder. `retry_in_seconds` is the current tick's
+    /// countdown so the UI can render "Ponowna próba za Xs".
     NoInternet { retry_in_seconds: u32 },
-    /// Network failed AND a usable prior install exists — user can pick
-    /// "offline mode" to bypass the update and launch what's on disk.
-    OfflineAvailable,
-    /// Download or verify failed irrecoverably. The state machine
-    /// parks here waiting for a UI button click.
+    /// Network failed three times AND a usable prior install exists —
+    /// user can pick "offline mode" to bypass the update and launch
+    /// what's on disk, OR keep waiting while the state machine auto-
+    /// retries in the background. `retry_in_seconds` is the current
+    /// tick's countdown so the UI shows the same progress affordance
+    /// as NoInternet; it wasn't shown in older f-stages because the
+    /// flow parked statically there.
+    OfflineAvailable { retry_in_seconds: u32 },
+    /// Download or verify failed; state machine auto-retries on the
+    /// cooldown ladder. `retry_in_seconds` is the current tick's
+    /// countdown.
     ///
     /// `has_offline` drives whether the UI renders the "Offline mode"
     /// button: true only when a local `local-manifest.json` was found
     /// on disk, so clicking Offline will actually have a valid install
-    /// to launch. On a fresh install (first-ever auto-update, nothing
-    /// on disk), this flag is false and the UI shows only Retry + Close
-    /// — clicking Offline would otherwise drop straight into
-    /// FatalError, which reads as "the Offline button is broken".
-    DownloadFailed { has_offline: bool },
+    /// to launch. On a fresh install the flag is false — Offline button
+    /// is hidden so the user doesn't click what would otherwise drop
+    /// to FatalError with "no local install available".
+    DownloadFailed { retry_in_seconds: u32, has_offline: bool },
     /// Non-recoverable error (malformed manifest, write permission
     /// denied, corrupt install state). Message is pre-localized by the
     /// state machine before being set here.
