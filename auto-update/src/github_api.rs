@@ -87,7 +87,13 @@ pub struct Asset {
 /// accepts a configurable base URL so tests can point at a `wiremock`
 /// server; production callers use [`GitHubClient::new`] which pins the
 /// public API endpoint.
-#[derive(Debug)]
+///
+/// `Clone` is cheap: all three fields are inexpensive to clone
+/// (`reqwest::Client` is `Arc<Inner>` internally, owner/repo are short
+/// `String`s, base_url too). Callers that retry across an auto-retry
+/// loop clone the client so each tick reuses the TCP/TLS connection
+/// pool instead of paying a fresh-handshake cost.
+#[derive(Debug, Clone)]
 pub struct GitHubClient {
     client: Client,
     base_url: String,

@@ -411,11 +411,17 @@ async fn channel_closed_before_user_decision_is_notfound() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn retry_succeeds_on_second_attempt_in_inner_loop() {
-    // Covers the `Ok(release)` arm INSIDE handle_api_failure's retry
-    // loop: first API call fails, second (after the retry_interval sleep)
-    // succeeds. Previously untested — mutation deleting that arm would
-    // have passed the other scenarios.
+async fn api_auto_retries_on_second_tick_after_first_failure() {
+    // Covers the `Ok(release)` arm of the auto-retry `select!` inside
+    // `handle_api_failure`: first tick's API call fails, second tick's
+    // (after the cooldown sleep) succeeds, flow proceeds to Updated
+    // without any user click. Mutation that drops the `Ok(release) =>
+    // process_release_or_park(...)` arm would hang the test on the
+    // 10 s timeout.
+    //
+    // (Renamed from `retry_succeeds_on_second_attempt_in_inner_loop`
+    // in T2.11f7-followup — the old name referred to the removed
+    // bounded `for 0..max_api_retries` loop.)
     let install_dir = tempfile::tempdir().unwrap();
 
     let server = MockServer::start().await;
@@ -656,6 +662,163 @@ async fn download_failed_without_local_hides_offline_flag() {
         matches!(result, Err(UpdaterError::NotFound(_))),
         "expected NotFound on channel close while parked, got {result:?}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn user_offline_click_preempts_cooldown_tick() {
+    // f7-followup mutation guard: `tokio::select!` has `biased;` with
+    // `user_rx.recv()` first, so a user click that arrives while the
+    // cooldown sleep is still running MUST win the race immediately
+    // (not on the next tick). Uses `retry_interval_secs = 1` so the
+    // sleep arm is actually blocking — with the zero-delay config the
+    // sleep completes instantly and `biased` has nothing to prove.
+    //
+    // Mutation: flipping the arms (sleep first, recv second) or
+    // removing `biased;` turns the race random; over many runs the
+    // flow might still pass, but the 1-s sleep latency would show
+    // up intermittently and flake the 2-s deadline below.
+    let install_dir = tempfile::tempdir().unwrap();
+    seed_local_manifest(install_dir.path(), "launcher/old-app.jar");
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(latest_release_path()))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(Mutex::new(UiState::Checking));
+    let (user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
+
+    // Nonzero retry interval so the sleep arm of `select!` actually
+    // blocks — forces the biased user arm to prove its priority.
+    let cfg = RunUpdateFlowConfig::new(server.uri())
+        .with_retry_interval_secs(1)
+        .with_checking_min_ms(0);
+
+    let state_bg = Arc::clone(&state);
+    let install_path = install_dir.path().to_path_buf();
+    let flow_handle = tokio::spawn(async move {
+        run_update_flow_with_config(
+            install_path,
+            Channel::Stable,
+            OsTarget::Windows,
+            state_bg,
+            &mut user_rx,
+            cfg,
+        )
+        .await
+    });
+
+    // Wait for the flow to enter its first NoInternet sleep.
+    wait_for_state_matching(
+        &state,
+        |s| matches!(s, UiState::NoInternet { .. }),
+        "NoInternet (first cooldown)",
+    )
+    .await;
+
+    // Send Offline click — biased select! must pick this up before
+    // the 1 s timer expires.
+    user_tx.send(UserAction::Offline).await.unwrap();
+
+    // With biased user-first polling, the flow must return essentially
+    // instantly (< 500 ms). The 2 s deadline catches a regression that
+    // flips to timer-first or random polling.
+    let result = tokio::time::timeout(Duration::from_secs(2), flow_handle)
+        .await
+        .expect("biased select! must preempt cooldown within 2 s")
+        .unwrap();
+
+    match result {
+        Ok(FlowOutcome::UserRequestedOffline(launcher_rel)) => {
+            assert_eq!(launcher_rel.as_str(), "launcher/old-app.jar");
+        }
+        other => panic!("expected UserRequestedOffline, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn user_offline_click_in_download_failed_returns_launcher_path() {
+    // Covers `dispatch_user_action_with_local` through the
+    // `park_on_download_failure` path (not the handle_api_failure path,
+    // which `exhausted_retries_with_local_manifest_offers_offline`
+    // already covers). Regression guard for the mutation
+    // `FlowOutcome::UserRequestedOffline → FlowOutcome::Updated` inside
+    // the shared dispatcher — before this test, that mutation survived
+    // for the download-parking call site.
+    let install_dir = tempfile::tempdir().unwrap();
+    seed_local_manifest(install_dir.path(), "launcher/old-app.jar");
+
+    let server = MockServer::start().await;
+    let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
+
+    // API + manifest return 200, but the MANIFEST payload is malformed
+    // — parse error surfaces via process_release → DownloadFailed with
+    // has_offline=true (local is seeded). User then clicks Offline.
+    Mock::given(method("GET"))
+        .and(path(latest_release_path()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(release_json("v0.1.0", &manifest_url)),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/manifest-windows.json"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"version":"0.1.0"}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(Mutex::new(UiState::Checking));
+    let (user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
+    let state_bg = Arc::clone(&state);
+    let install_path = install_dir.path().to_path_buf();
+    let cfg = test_config(server.uri());
+
+    let flow_handle = tokio::spawn(async move {
+        run_update_flow_with_config(
+            install_path,
+            Channel::Stable,
+            OsTarget::Windows,
+            state_bg,
+            &mut user_rx,
+            cfg,
+        )
+        .await
+    });
+
+    wait_for_state_matching(
+        &state,
+        |s| matches!(s, UiState::DownloadFailed { has_offline: true, .. }),
+        "DownloadFailed { has_offline: true }",
+    )
+    .await;
+
+    // Malformed manifest is permanent under the new classification —
+    // `is_permanent_error` short-circuits to FatalError BEFORE
+    // entering park_on_download_failure's retry loop. But wait — a
+    // Json parse error is UpdaterError::Json, NOT Manifest. So it
+    // IS transient-classified and DOES enter the park loop. User's
+    // Offline click then takes the dispatcher's Offline-with-local
+    // branch.
+    user_tx.send(UserAction::Offline).await.unwrap();
+
+    let result = tokio::time::timeout(Duration::from_secs(10), flow_handle)
+        .await
+        .expect("park_on_download_failure must dispatch offline within 10 s")
+        .unwrap();
+
+    match result {
+        Ok(FlowOutcome::UserRequestedOffline(launcher_rel)) => {
+            assert_eq!(launcher_rel.as_str(), "launcher/old-app.jar");
+        }
+        other => panic!(
+            "expected UserRequestedOffline via download-park dispatcher, got {other:?}"
+        ),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -128,27 +128,37 @@ fn old_version_display(old_version: Option<&Version>) -> String {
     }
 }
 
-/// Internal outcome of a single `run_update_flow` attempt. Previously
-/// had a `UserRetry` variant that fed the outer loop's `continue` path;
-/// that variant is gone now that the UI doesn't surface a Retry button —
-/// auto-retries happen on the cooldown ladder's own tick, not on a
-/// user click. Kept as a struct enum to leave room for future "loop
-/// back" variants (e.g. AutoRetryTick in T2.11f7) without reshaping the
-/// return type.
-enum AttemptOutcome {
-    Succeeded(FlowOutcome),
+/// Bundle of the values threaded through every layer of the update
+/// flow (`run_update_flow_with_config` → `handle_api_failure` → ...).
+/// Before T2.11f7-followup each of those fns carried 7-9 positional
+/// args; the shared six moved here so adding a new context field
+/// (e.g. a telemetry client, a cancellation token) touches one struct
+/// instead of four call paths.
+///
+/// `user_rx` is `&'a mut` (single-consumer mpsc side — borrowed by
+/// whichever retry loop is currently active), `cfg` is `&'a` (read-only
+/// after construction in main.rs / tests). `install_dir` / `channel` /
+/// `os` are cheap (`PathBuf` + two tiny enums) so they live by-value.
+/// `state` is `Arc<Mutex>` shared with the eframe UI thread.
+struct FlowContext<'a> {
+    install_dir: PathBuf,
+    channel: Channel,
+    os: OsTarget,
+    state: Arc<Mutex<UiState>>,
+    user_rx: &'a mut mpsc::Receiver<UserAction>,
+    cfg: &'a RunUpdateFlowConfig,
 }
 
 /// Top-level update flow: check → download → verify → install. Runs
-/// once per call today (the only outer-loop continuation was
-/// `UserAction::Retry`, which has been removed); T2.11f7 will
-/// reintroduce a background-tick loop here so the flow auto-retries
-/// from parked states without user action.
+/// once per call — auto-retries happen internally inside
+/// [`handle_api_failure`] / [`park_on_download_failure`] via the
+/// cooldown-ladder tokio::select! loops. Only terminal exits bubble
+/// back here (Updated, UserRequestedOffline, FatalError + channel
+/// close variants of Err).
 ///
-/// `user_rx` is consumed by the parking points in [`handle_api_failure`]
-/// / [`park_on_download_failure`]. The caller (main.rs) owns the matching
-/// `Sender` and wires it into the UI callbacks so button clicks become
-/// channel pushes.
+/// `user_rx` is consumed by those parking points. The caller
+/// (main.rs) owns the matching `Sender` and wires it into the UI
+/// callbacks so button clicks become channel pushes.
 pub async fn run_update_flow(
     install_dir: PathBuf,
     channel: Channel,
@@ -236,9 +246,13 @@ impl RunUpdateFlowConfig {
         }
     }
 
-    /// Override the API retry interval. Production uses 30 s (via
-    /// `Default`); tests call with `0` to drop the sleep-between-retries
-    /// overhead without losing exercise of the sleep code path.
+    /// Override the auto-retry delay flag. Production uses the default
+    /// (nonzero → cooldown ladder active); **tests** call this with `0`
+    /// to drop all retry sleeps so integration scenarios resolve in
+    /// milliseconds. Passing `0` in production builds collapses every
+    /// backoff wait, which turns the parked retry loops into a tight
+    /// `select!` spin against GitHub and will quickly hit API rate
+    /// limits — only ever set `0` from tests.
     #[must_use]
     pub fn with_retry_interval_secs(mut self, secs: u32) -> Self {
         self.retry_interval_secs = secs;
@@ -282,55 +296,91 @@ pub async fn run_update_flow_with_config(
 
     let github =
         GitHubClient::with_base_url(&cfg.github_base_url, REPO_OWNER, REPO_NAME)?;
-    let AttemptOutcome::Succeeded(outcome) = match github.latest_release(channel).await {
-        Ok(release) => {
-            process_release_or_park(
-                install_dir, github, release, channel, os, state, user_rx, &cfg,
-            )
-            .await?
-        }
-        Err(e) => {
-            handle_api_failure(install_dir, github, channel, os, state, user_rx, &cfg, e)
-                .await?
-        }
+
+    // Bundle the plumbing so the retry helpers don't each take 8 args.
+    let mut ctx = FlowContext {
+        install_dir,
+        channel,
+        os,
+        state,
+        user_rx,
+        cfg: &cfg,
     };
-    Ok(outcome)
+
+    match github.latest_release(channel).await {
+        Ok(release) => process_release_or_park(&mut ctx, github, release).await,
+        Err(e) => handle_api_failure(&mut ctx, github, e).await,
+    }
+}
+
+/// Classify an `UpdaterError` as transient (auto-retry worthwhile) vs
+/// permanent (retry won't help — e.g. corrupt manifest hash, file-
+/// system permission). Permanent errors short-circuit out of the auto-
+/// retry loops to `FatalError` instead of hammering a broken artifact
+/// forever (which would also waste every client's bandwidth if the
+/// broken artifact is a remote manifest).
+fn is_permanent_error(err: &UpdaterError) -> bool {
+    matches!(
+        err,
+        UpdaterError::Manifest(_)
+            | UpdaterError::HashMismatch { .. }
+            | UpdaterError::Permission(_)
+            | UpdaterError::SwapFailed { .. }
+            | UpdaterError::InvalidConfig(_)
+            | UpdaterError::SelfUpdateSwapFailed(_)
+            | UpdaterError::SelfUpdateRespawnFailed(_)
+    )
 }
 
 async fn handle_api_failure(
-    install_dir: PathBuf,
+    ctx: &mut FlowContext<'_>,
     github: GitHubClient,
-    channel: Channel,
-    os: OsTarget,
-    state: Arc<Mutex<UiState>>,
-    user_rx: &mut mpsc::Receiver<UserAction>,
-    cfg: &RunUpdateFlowConfig,
     original_err: UpdaterError,
-) -> Result<AttemptOutcome> {
+) -> Result<FlowOutcome> {
     log::warn!("GitHub API failed: {original_err}; entering auto-retry loop");
 
-    let local = manifest::load_local(&install_dir);
-    let mut iteration: u32 = 0;
+    // Classify up front — a permanent error skips the retry ceremony.
+    if is_permanent_error(&original_err) {
+        set_state(
+            &ctx.state,
+            UiState::FatalError {
+                message: format!("{original_err}"),
+            },
+        );
+        return Err(original_err);
+    }
 
+    let mut iteration: u32 = 0;
     loop {
         iteration = iteration.saturating_add(1);
         let cooldown_secs = u32::try_from(backoff_floor_secs(iteration)).unwrap_or(u32::MAX);
+
+        // Refresh `local` per-iteration so late filesystem writes (user
+        // drops a manifest from backup while we're parked) are picked
+        // up on the next tick rather than frozen to the entry snapshot.
+        let local = manifest::load_local(&ctx.install_dir);
 
         // Transition rule — spec 4.x opcja 2:
         //  - first `API_FAILURES_BEFORE_OFFLINE_PROMPT` (3) retries stay
         //    in `NoInternet` regardless of has_offline — UI keeps the
         //    user in "something's wrong, trying again" framing without
         //    prematurely offering the offline escape hatch.
-        //  - after 3 failures + local exists → `OfflineAvailable` (we
+        //  - after 3 retries + local exists → `OfflineAvailable` (we
         //    keep auto-retrying in the BACKGROUND so the flow resumes
         //    automatically if the API comes back; user can also just
         //    click Tryb offline to launch the local install directly).
-        //  - after 3 failures + NO local → `FatalError` (no recovery
+        //  - after 3 retries + NO local → `FatalError` (no recovery
         //    path — first install on a broken network). Per Mateusz:
         //    "opcja 2: nie ma local install → wywala fatal error".
+        //
+        // Semantics note (per Mateusz "A" decision): the user lives
+        // through `[Checking][NoInternet × 3][OfflineAvailable | FatalError]`
+        // — 1 initial API call + 3 retry ticks = 4 network attempts
+        // total before the UI switches to the terminal screen. The
+        // threshold is the retry count, not the total-attempt count.
         if iteration > API_FAILURES_BEFORE_OFFLINE_PROMPT && local.is_none() {
             set_state(
-                &state,
+                &ctx.state,
                 UiState::FatalError {
                     message: format!("{original_err}"),
                 },
@@ -348,45 +398,52 @@ async fn handle_api_failure(
                     retry_in_seconds: cooldown_secs,
                 }
             };
-        set_state(&state, ui_state);
+        set_state(&ctx.state, ui_state);
 
-        let sleep_duration = if cfg.retry_interval_secs == 0 {
+        let sleep_duration = if ctx.cfg.retry_interval_secs == 0 {
             Duration::ZERO
         } else {
             backoff_floor_duration_with_jitter(iteration)
         };
 
-        // Race the cooldown sleep against a user click. Whichever fires
-        // first wins the turn: timer expiry = try the API again; user
-        // action = dispatch to offline / fatal / channel-close. This is
-        // what makes the parked states auto-recover from the user's
-        // POV — if the API comes back during the cooldown, the tick
-        // fires, the flow resumes, the user sees the update progress
-        // without ever having clicked a button.
+        // Race the cooldown sleep against a user click. `biased;` polls
+        // the user arm first so a click that lands in the same runtime
+        // tick as the timer expiry always wins — a user who explicitly
+        // clicked Tryb offline wants to launch now, not sit through
+        // another 30 s wait because the RNG happened to pick the timer.
+        //
+        // Both arms are cancel-safe per tokio docs (`mpsc::Receiver::recv`
+        // explicitly, `time::sleep` trivially — clock unregister).
         tokio::select! {
+            biased;
+            user = ctx.user_rx.recv() => {
+                return dispatch_user_action_with_local(
+                    user,
+                    local.as_ref(),
+                    ctx,
+                );
+            }
             _ = tokio::time::sleep(sleep_duration) => {
-                match github.latest_release(channel).await {
+                match github.latest_release(ctx.channel).await {
                     Ok(release) => {
-                        return process_release_or_park(
-                            install_dir, github, release, channel, os, state, user_rx, cfg,
-                        )
-                        .await;
+                        return process_release_or_park(ctx, github, release).await;
                     }
                     Err(e) => {
+                        if is_permanent_error(&e) {
+                            set_state(
+                                &ctx.state,
+                                UiState::FatalError {
+                                    message: format!("{e}"),
+                                },
+                            );
+                            return Err(e);
+                        }
                         log::warn!(
                             "auto-retry iteration {iteration} failed: {e}; scheduling next tick"
                         );
                         // fall through — next loop iteration
                     }
                 }
-            }
-            user = user_rx.recv() => {
-                return dispatch_user_action_with_local(
-                    user,
-                    local.as_ref(),
-                    &state,
-                    cfg,
-                );
             }
         }
     }
@@ -400,23 +457,22 @@ async fn handle_api_failure(
 fn dispatch_user_action_with_local(
     action: Option<UserAction>,
     local: Option<&crate::manifest::Manifest>,
-    state: &Arc<Mutex<UiState>>,
-    cfg: &RunUpdateFlowConfig,
-) -> Result<AttemptOutcome> {
+    ctx: &FlowContext<'_>,
+) -> Result<FlowOutcome> {
     match action {
         Some(UserAction::Offline) => {
             if let Some(local) = local {
-                Ok(AttemptOutcome::Succeeded(
-                    FlowOutcome::UserRequestedOffline(local.launcher_executable.clone()),
+                Ok(FlowOutcome::UserRequestedOffline(
+                    local.launcher_executable.clone(),
                 ))
             } else {
                 // Offline click arriving despite the UI hiding the
                 // button when `has_offline == false` — bug or a racy
                 // click landing between state transitions. Surface as
                 // FatalError with the localized message.
-                let msg = cfg.strings.no_offline_install.to_string();
+                let msg = ctx.cfg.strings.no_offline_install.to_string();
                 set_state(
-                    state,
+                    &ctx.state,
                     UiState::FatalError {
                         message: msg.clone(),
                     },
@@ -430,102 +486,127 @@ fn dispatch_user_action_with_local(
     }
 }
 
-/// Wraps [`process_release`] so that any failure (manifest fetch,
-/// download, verify, install) funnels into the `DownloadFailed` screen
-/// instead of bubbling straight to `FatalError`. Mirrors the
-/// [`handle_api_failure`] retry-pattern for the post-release half of
-/// the flow — the user gets Retry (restart outer loop) and, when a
-/// local install exists, Offline (fall back to the local manifest)
-/// buttons. If no local install is on disk, the UI sees
-/// `DownloadFailed { has_offline: false }` and hides the Offline
-/// button entirely.
-///
-/// Kept separate from `process_release` so the happy path and the pure
-/// side-effects (file I/O, atomic swaps) remain readable without the
-/// error-parking control flow noise.
+/// Wraps [`process_release`] so any failure funnels into the
+/// `DownloadFailed` screen + background auto-retry, rather than
+/// bubbling directly to `FatalError`. Transient errors (Network, Io,
+/// Json, generic NotFound) cycle on the cooldown ladder until the
+/// next attempt succeeds or the user dismisses. Permanent errors
+/// (bad hash, corrupt manifest, permission denied, swap failure)
+/// short-circuit to `FatalError` — retry can't fix those.
 async fn process_release_or_park(
-    install_dir: PathBuf,
+    ctx: &mut FlowContext<'_>,
     github: GitHubClient,
     release: Release,
-    channel: Channel,
-    os: OsTarget,
-    state: Arc<Mutex<UiState>>,
-    user_rx: &mut mpsc::Receiver<UserAction>,
-    cfg: &RunUpdateFlowConfig,
-) -> Result<AttemptOutcome> {
-    match process_release(install_dir.clone(), github, release, os, Arc::clone(&state)).await {
-        Ok(launcher_rel) => Ok(AttemptOutcome::Succeeded(FlowOutcome::Updated(launcher_rel))),
-        Err(e) => {
-            park_on_download_failure(install_dir, channel, os, state, user_rx, cfg, e).await
-        }
+) -> Result<FlowOutcome> {
+    match process_release(
+        ctx.install_dir.clone(),
+        github,
+        release,
+        ctx.os,
+        Arc::clone(&ctx.state),
+    )
+    .await
+    {
+        Ok(launcher_rel) => Ok(FlowOutcome::Updated(launcher_rel)),
+        Err(e) => park_on_download_failure(ctx, e).await,
     }
 }
 
-/// User-facing post-error parking: set `DownloadFailed` with the
-/// `has_offline` flag derived from whether a local-manifest exists,
-/// await a `UserAction`, and dispatch.
-///
-/// Shares the shape with [`park_on_user_action`] but the UI-state +
-/// error-message pair differs enough (DownloadFailed vs OfflineAvailable,
-/// different localized FatalError message on no-offline path) that a
-/// tighter shared helper would obscure the differences. If a third
-/// parking site appears, revisit.
 async fn park_on_download_failure(
-    install_dir: PathBuf,
-    channel: Channel,
-    os: OsTarget,
-    state: Arc<Mutex<UiState>>,
-    user_rx: &mut mpsc::Receiver<UserAction>,
-    cfg: &RunUpdateFlowConfig,
+    ctx: &mut FlowContext<'_>,
     original_err: UpdaterError,
-) -> Result<AttemptOutcome> {
+) -> Result<FlowOutcome> {
     log::warn!("release processing failed: {original_err}; entering download auto-retry");
-    let local = manifest::load_local(&install_dir);
-    let has_offline = local.is_some();
-    let mut iteration: u32 = 0;
 
+    // Permanent errors (HashMismatch, Manifest parse, Permission,
+    // SwapFailed, InvalidConfig, SelfUpdate* failures) are NOT fixable
+    // by retrying the same artifact / filesystem state. Short-circuit
+    // to FatalError so the user sees a stable error screen instead of
+    // the app hammering a broken manifest forever. Transient errors
+    // (Network, Io, generic NotFound) fall through to the loop.
+    if is_permanent_error(&original_err) {
+        set_state(
+            &ctx.state,
+            UiState::FatalError {
+                message: format!("{original_err}"),
+            },
+        );
+        return Err(original_err);
+    }
+
+    // Build the GitHubClient ONCE before the loop and clone it into
+    // each tick: reqwest::Client is `Arc<Inner>` internally, so `clone`
+    // preserves the TCP/TLS connection pool and DNS cache across
+    // retries. Previously every tick rebuilt the client and paid a
+    // full-handshake cost per 8-30 s — wasted work with no payoff.
+    let github =
+        GitHubClient::with_base_url(&ctx.cfg.github_base_url, REPO_OWNER, REPO_NAME)?;
+
+    let mut iteration: u32 = 0;
     loop {
         iteration = iteration.saturating_add(1);
         let cooldown_secs = u32::try_from(backoff_floor_secs(iteration)).unwrap_or(u32::MAX);
 
+        // Refresh local snapshot per-iteration — a user copy-pasting a
+        // manifest from backup while we're parked should flip
+        // has_offline: false → true on the next UI paint.
+        let local = manifest::load_local(&ctx.install_dir);
+        let has_offline = local.is_some();
+
         set_state(
-            &state,
+            &ctx.state,
             UiState::DownloadFailed {
                 retry_in_seconds: cooldown_secs,
                 has_offline,
             },
         );
 
-        let sleep_duration = if cfg.retry_interval_secs == 0 {
+        let sleep_duration = if ctx.cfg.retry_interval_secs == 0 {
             Duration::ZERO
         } else {
             backoff_floor_duration_with_jitter(iteration)
         };
 
         tokio::select! {
+            biased;
+            user = ctx.user_rx.recv() => {
+                return dispatch_user_action_with_local(
+                    user,
+                    local.as_ref(),
+                    ctx,
+                );
+            }
             _ = tokio::time::sleep(sleep_duration) => {
-                // Tick — re-fetch release (API might have a new version),
-                // re-download, re-install. Full-cycle retry so a transient
-                // CDN hiccup, AV scanner lock, or flaky disk can recover.
-                let github =
-                    GitHubClient::with_base_url(&cfg.github_base_url, REPO_OWNER, REPO_NAME)?;
-                match github.latest_release(channel).await {
+                // Tick — re-fetch release (API might have a new version)
+                // + re-run process_release from scratch. Transient CDN
+                // hiccups, AV scanner locks, flaky disks can recover.
+                // Permanent errors short-circuit to FatalError via the
+                // is_permanent_error check below (same rule as the
+                // entry-point check above).
+                match github.latest_release(ctx.channel).await {
                     Ok(release) => {
                         match process_release(
-                            install_dir.clone(),
-                            github,
+                            ctx.install_dir.clone(),
+                            github.clone(),
                             release,
-                            os,
-                            Arc::clone(&state),
+                            ctx.os,
+                            Arc::clone(&ctx.state),
                         )
                         .await
                         {
                             Ok(launcher_rel) => {
-                                return Ok(AttemptOutcome::Succeeded(FlowOutcome::Updated(
-                                    launcher_rel,
-                                )));
+                                return Ok(FlowOutcome::Updated(launcher_rel));
                             }
                             Err(e) => {
+                                if is_permanent_error(&e) {
+                                    set_state(
+                                        &ctx.state,
+                                        UiState::FatalError {
+                                            message: format!("{e}"),
+                                        },
+                                    );
+                                    return Err(e);
+                                }
                                 log::warn!(
                                     "download auto-retry iteration {iteration} failed: {e}"
                                 );
@@ -534,20 +615,21 @@ async fn park_on_download_failure(
                         }
                     }
                     Err(e) => {
+                        if is_permanent_error(&e) {
+                            set_state(
+                                &ctx.state,
+                                UiState::FatalError {
+                                    message: format!("{e}"),
+                                },
+                            );
+                            return Err(e);
+                        }
                         log::warn!(
                             "download auto-retry iteration {iteration} API fetch failed: {e}"
                         );
                         // next loop iteration
                     }
                 }
-            }
-            user = user_rx.recv() => {
-                return dispatch_user_action_with_local(
-                    user,
-                    local.as_ref(),
-                    &state,
-                    cfg,
-                );
             }
         }
     }
