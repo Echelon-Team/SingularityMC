@@ -209,6 +209,7 @@ private fun HomeContinueCard(
                 Spacer(Modifier.height(4.dp))
                 val subtitle = if (lastPlayed != null) {
                     formatLastPlayedSubtitle(
+                        i18n = i18n,
                         name = lastPlayed.instanceName,
                         version = lastPlayed.minecraftVersion,
                         type = lastPlayed.type,

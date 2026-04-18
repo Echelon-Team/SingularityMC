@@ -1,6 +1,7 @@
 package com.singularity.launcher.ui.screens.home
 
 import com.singularity.common.model.InstanceType
+import com.singularity.launcher.config.I18n
 import com.singularity.launcher.config.OfflineMode
 import com.singularity.launcher.service.InstanceManager
 import com.singularity.launcher.service.news.NewsSource
@@ -66,13 +67,16 @@ data class LastPlayedInfo(
 )
 
 /**
- * Format "Survival World — MC 1.20.1 Enhanced — grane 2h temu".
+ * Format "Survival World — MC 1.20.1 Enhanced — grane 2h temu" (or EN equivalent).
  *
- * NOTE: time-ago strings are intentionally Polish-only for MVP (matches hardcoded
- * `polishMonths` in HomeScreen.kt); i18n-aware rephrasing is a future refactor when EN
- * users are on the roadmap.
+ * Time-ago phrases + surrounding pattern are i18n-driven
+ * (`home.continue.time_ago.*`, `home.continue.subtitle_pattern`). "Enhanced"/"Vanilla"
+ * stay hardcoded as type-brand identifiers — they're not display copy. For release
+ * dates rendered elsewhere see `polishMonths` in HomeScreen.kt (kept PL-only for a
+ * documented JDK locale-data bug, not for lack of i18n plumbing).
  */
 fun formatLastPlayedSubtitle(
+    i18n: I18n,
     name: String,
     version: String,
     type: InstanceType,
@@ -88,13 +92,13 @@ fun formatLastPlayedSubtitle(
     val diffH = diffMin / 60
     val diffD = diffH / 24
     val timeAgo = when {
-        diffMin < 1 -> "przed chwilą"
-        diffMin < 60 -> "${diffMin}min temu"
-        diffH < 24 -> "${diffH}h temu"
-        diffD < 7 -> "${diffD}d temu"
-        else -> "dawno temu"
+        diffMin < 1 -> i18n["home.continue.time_ago.just_now"]
+        diffMin < 60 -> String.format(i18n["home.continue.time_ago.minutes"], diffMin)
+        diffH < 24 -> String.format(i18n["home.continue.time_ago.hours"], diffH)
+        diffD < 7 -> String.format(i18n["home.continue.time_ago.days"], diffD)
+        else -> i18n["home.continue.time_ago.long"]
     }
-    return "$name — MC $version $typeStr — grane $timeAgo"
+    return String.format(i18n["home.continue.subtitle_pattern"], name, version, typeStr, timeAgo)
 }
 
 class HomeViewModel(

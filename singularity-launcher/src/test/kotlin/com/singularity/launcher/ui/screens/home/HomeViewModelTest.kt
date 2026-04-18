@@ -3,6 +3,7 @@ package com.singularity.launcher.ui.screens.home
 import com.singularity.common.model.InstanceConfig
 import com.singularity.common.model.InstanceType
 import com.singularity.common.model.LoaderType
+import com.singularity.launcher.config.I18n
 import com.singularity.launcher.config.OfflineMode
 import com.singularity.launcher.service.InstanceManager
 import com.singularity.launcher.service.news.NewsCache
@@ -152,8 +153,10 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun `formatLastPlayedSubtitle formats properly`() {
+    fun `formatLastPlayedSubtitle formats in polish by default`() {
+        val i18n = I18n.loadFromResources(defaultLanguage = "pl")
         val subtitle = formatLastPlayedSubtitle(
+            i18n = i18n,
             name = "Survival World",
             version = "1.20.1",
             type = InstanceType.ENHANCED,
@@ -162,7 +165,23 @@ class HomeViewModelTest {
         assertTrue(subtitle.contains("Survival World"))
         assertTrue(subtitle.contains("1.20.1"))
         assertTrue(subtitle.contains("Enhanced"))
-        assertTrue(subtitle.contains("temu") || subtitle.contains("ago"))
+        assertTrue(subtitle.contains("temu"), "expected polish time-ago phrase, got: $subtitle")
+    }
+
+    @Test
+    fun `formatLastPlayedSubtitle formats in english when lang switched`() {
+        val i18n = I18n.loadFromResources(defaultLanguage = "en")
+        val subtitle = formatLastPlayedSubtitle(
+            i18n = i18n,
+            name = "Hardcore Base",
+            version = "1.20.1",
+            type = InstanceType.VANILLA,
+            lastPlayedMs = System.currentTimeMillis() - 7200000L
+        )
+        assertTrue(subtitle.contains("Hardcore Base"))
+        assertTrue(subtitle.contains("Vanilla"))
+        assertTrue(subtitle.contains("ago"), "expected english time-ago phrase, got: $subtitle")
+        assertTrue(subtitle.contains("played"), "expected english 'played' word, got: $subtitle")
     }
 
     // === loadReleases tests (Task 1.8) ===
