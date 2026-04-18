@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# AppImage entrypoint. `$HERE` rozwiązuje się do tymczasowego katalogu
+# gdzie AppImage zamountował swoją zawartość; auto-update binarka
+# leży obok tego skryptu po wypakowaniu.
+HERE="$(dirname "$(readlink -f "${0}")")"
+exec "$HERE/auto-update" "$@"

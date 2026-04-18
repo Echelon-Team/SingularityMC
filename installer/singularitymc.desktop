@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=SingularityMC
+Exec=auto-update
+Icon=singularitymc
+Type=Application
+Categories=Game;
+Terminal=false
