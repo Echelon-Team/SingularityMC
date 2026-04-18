@@ -163,18 +163,27 @@ impl eframe::App for AutoUpdateApp {
             remaining.min,
             egui::pos2(remaining.max.x, remaining.max.y - BUTTON_ROW_HEIGHT),
         );
-        // Buttons row spans the full remaining width; horizontal
-        // centring is then handled by the layout + wrap pattern
-        // inside (see the scope below). Full-width rect avoids a
-        // width-estimate: a too-small estimate leaves buttons offset
-        // right (they overflow the centred rect), a too-large one
-        // leaves them offset left. Trick: outer `top_down(Center)`
-        // cross-centres a single child in the full-width rect, and
-        // `ui.horizontal` inside is that single child — so the row's
-        // natural width ends up horizontally centred.
+        // Buttons row: MEASURE the total row width via `ui.fonts()`,
+        // then position the scope rect at the exact horizontal centre
+        // of the window. `Layout::left_to_right(Align::Center)` then
+        // packs buttons LTR starting at the rect's left edge — and
+        // because the rect is exactly `buttons_width` wide, LTR packing
+        // fills it perfectly. No layout-level centring trick, no hand
+        // estimate. Two earlier attempts broke because (a) `top_down`
+        // Align::Center cross-centred a child that then consumed the
+        // full width and LTR-packed from its left, and (b)
+        // `Layout::with_main_align(Center)` did nothing visible in
+        // practice when combined with `max_rect` — possibly because
+        // the max_rect defines `max` not `min_size`, so the layout
+        // doesn't know how wide it actually needs to be until after
+        // it's placed the children.
+        let buttons_width = compute_buttons_row_width(ui, s, &current_state);
         let buttons_rect = egui::Rect::from_min_size(
-            egui::pos2(remaining.min.x, remaining.max.y - BUTTON_ROW_HEIGHT),
-            egui::vec2(remaining.width(), BUTTON_ROW_HEIGHT),
+            egui::pos2(
+                remaining.center().x - buttons_width / 2.0,
+                remaining.max.y - BUTTON_ROW_HEIGHT,
+            ),
+            egui::vec2(buttons_width, BUTTON_ROW_HEIGHT),
         );
 
         // Middle content. egui has no built-in "centre multiple stacked
@@ -207,10 +216,7 @@ impl eframe::App for AutoUpdateApp {
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(buttons_rect)
-                .layout(
-                    egui::Layout::left_to_right(egui::Align::Center)
-                        .with_main_align(egui::Align::Center),
-                ),
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
                 apply_button_theme(ui);
                 render_buttons(ui, &current_state, s, &self.on_offline_mode);
@@ -317,6 +323,51 @@ fn draw_titlebar(ui: &mut egui::Ui) {
         ui.style().visuals.text_color(),
     );
     ui.add_space(TITLEBAR_HEIGHT);
+}
+
+/// Measure the exact total width of the button row for the current
+/// state using the live font/padding/spacing resolved from `ui`. No
+/// hand estimates — calls `ui.fonts()` with the button text style to
+/// get per-label widths, adds button padding + item spacing from the
+/// current style, returns the full row width so the caller can
+/// position a scope rect exactly centred on the window.
+fn compute_buttons_row_width(
+    ui: &egui::Ui,
+    s: &i18n::Strings,
+    state: &UiState,
+) -> f32 {
+    let font_id = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Button)
+        .cloned()
+        .unwrap_or_default();
+    let text_width = |text: &str| -> f32 {
+        // Painter layouts go through `ctx.fonts_mut` under the hood, so
+        // this works from a `&Ui` — direct `ui.fonts(|f| f.layout_no_wrap(..))`
+        // fails the borrow check because `layout_no_wrap` takes `&mut self`
+        // and `ui.fonts(..)` hands out `&Fonts`.
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font_id.clone(), egui::Color32::WHITE)
+            .rect
+            .width()
+    };
+    let button_pad_x2 = ui.style().spacing.button_padding.x * 2.0;
+    let item_spacing = ui.style().spacing.item_spacing.x;
+    let btn = |text: &str| -> f32 { text_width(text) + button_pad_x2 };
+    match state {
+        UiState::OfflineAvailable { .. }
+        | UiState::DownloadFailed { has_offline: true, .. } => {
+            btn(s.close) + btn(s.help) + btn(s.offline_mode) + item_spacing * 2.0
+        }
+        UiState::NoInternet { .. }
+        | UiState::FatalError { .. }
+        | UiState::DownloadFailed { has_offline: false, .. } => {
+            btn(s.close) + btn(s.help) + item_spacing
+        }
+        // Work states have no buttons — rect can collapse to 0.
+        _ => 0.0,
+    }
 }
 
 /// Approx height (px) of the content stack per state — used to
