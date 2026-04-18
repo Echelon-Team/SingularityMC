@@ -526,6 +526,7 @@ async fn process_release_or_park(
         release,
         ctx.os,
         Arc::clone(&ctx.state),
+        ctx.cfg.strings,
     )
     .await
     {
@@ -615,6 +616,7 @@ async fn park_on_download_failure(
                             release,
                             ctx.os,
                             Arc::clone(&ctx.state),
+                            ctx.cfg.strings,
                         )
                         .await
                         {
@@ -665,8 +667,47 @@ async fn process_release(
     release: Release,
     os: OsTarget,
     state: Arc<Mutex<UiState>>,
+    strings: &'static crate::Strings,
 ) -> Result<ManifestPath> {
     let remote = github.fetch_manifest(&release, os).await?;
+
+    // Compatibility gate: remote manifest może wymagać nowszego
+    // auto-update niż this binary (spec §4.6 future-proof format
+    // changes). Kiedy bumpniemy manifest schema w przyszłym release
+    // — np. dodajemy signed manifests, nowy hash algo, nowy field z
+    // semantyką której stary parser nie rozumie — generate-manifest
+    // script będzie emitował `minAutoUpdateVersion` ≥ tej nowej
+    // wersji. Stary auto-update zobaczy manifest, wykryje że BUILD_VERSION
+    // jest poniżej min, natychmiast poda FatalError zamiast próbować
+    // install który może zrobić damage (silent partial failure).
+    //
+    // Self-update-from-remote jako recovery ścieżka jest follow-up
+    // task: wymaga SHA-pinned auto-update binary URL w manifest, stable
+    // CDN convention, extra test coverage. Na teraz user pobiera świeży
+    // installer ręcznie (localized message wskazuje Discord).
+    let current_version = Version::parse(crate::BUILD_VERSION).map_err(|e| {
+        UpdaterError::InvalidConfig(format!(
+            "invalid BUILD_VERSION '{}' embedded at build time: {e}",
+            crate::BUILD_VERSION
+        ))
+    })?;
+    if current_version.is_older_than(&remote.min_auto_update_version) {
+        log::error!(
+            "auto-update {current_version} is too old for manifest (requires >= {}); \
+             returning InvalidConfig with localized message — user needs a fresh installer",
+            remote.min_auto_update_version
+        );
+        // Message == localized `auto_update_too_old` bo
+        // `park_on_download_failure` przy permanent-error path robi
+        // `set_state(FatalError { message: format!("{e}") })` — Display
+        // output tej variant staje się user-facing message. Gdybyśmy
+        // użyli technical English (`"auto-update 1.0.0 < 99.0.0"`),
+        // user widziałby surowy debug string zamiast instrukcji gdzie
+        // pobrać nowy installer. Technical diff jest w logu powyżej.
+        let _ = &state; // kept dla signature consistency; state ustawi park helper
+        return Err(UpdaterError::InvalidConfig(strings.auto_update_too_old.to_string()));
+    }
+
 
     let local = manifest::load_local(&install_dir);
     // `Option<&Version>` — `None` is "fresh install / nothing on disk".

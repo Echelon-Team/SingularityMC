@@ -1,25 +1,26 @@
-//! Embed the build-time version string into the binary as `BUILD_VERSION`.
+//! Embed the auto-update version string into the binary as `BUILD_VERSION`.
 //!
-//! Priority order:
-//! 1. `git describe --tags --dirty` (definitive in a proper checkout).
-//! 2. `CARGO_PKG_VERSION` fallback (tarball / no-git environments).
+//! Source: `CARGO_PKG_VERSION` = `[package].version` w `Cargo.toml`.
+//! Mateusz 2026-04-18 explicit: auto-update version NIEZALEŻNA od
+//! launcher git-tag version (spec §4.1.3 example shows
+//! `minAutoUpdateVersion: "1.0.0"` vs launcher `version: "1.2.3"`).
 //!
-//! Unexpected git failures (git IS present, repo IS valid, but the command
-//! fails — e.g. permissions, corrupted refs) emit `cargo:warning=` so stale
-//! version strings never ship silently from a broken CI checkout.
-
-use std::io::ErrorKind;
-use std::process::Command;
+//! Poprzednia wersja build.rs używała `git describe --tags --dirty`
+//! jako primary source co wstrzykiwało LAUNCHER git tag do
+//! auto-update BUILD_VERSION — bug: app.rs potem porównywał "launcher
+//! 0.1.0" vs "manifest.minAutoUpdateVersion 1.0.0" co zawsze failuje.
+//! Poprawka: build.rs czyta CARGO_PKG_VERSION, launcher version jest
+//! propagowana osobnym torem (CI's `GITHUB_REF_NAME` → argv dla
+//! `generate-manifest.main.kts` → `manifest.version`).
 
 fn main() {
-    // Rerun when the version-affecting inputs change. Directories only watch
-    // direct entries, so packed-refs (shallow clones, CI) needs its own entry.
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../.git/HEAD");
-    println!("cargo:rerun-if-changed=../.git/refs/tags");
-    println!("cargo:rerun-if-changed=../.git/packed-refs");
+    println!("cargo:rerun-if-changed=Cargo.toml");
 
-    let version = version_from_git().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    // `env!("CARGO_PKG_VERSION")` w build.rs jest compile-time stałą
+    // którą Cargo sets od `[package].version`. Bump wersji = edycja
+    // Cargo.toml + rebuild → nowa BUILD_VERSION osadzona.
+    let version = env!("CARGO_PKG_VERSION");
     println!("cargo:rustc-env=BUILD_VERSION={version}");
 
     // Embed launcher Logo jako Win32 icon resource w auto-update.exe.
@@ -37,44 +38,6 @@ fn main() {
             // bez icon to tylko cosmetic regression, nie broken flow.
             // Inno Setup ma osobny SetupIconFile jako fallback.
             println!("cargo:warning=winres icon embed failed: {e}");
-        }
-    }
-}
-
-/// Returns Some(version) on clean success, None when git is absent or produced
-/// no usable output. Emits cargo:warning for "git present but failed" — those
-/// are the silent-failure cases we want to surface.
-fn version_from_git() -> Option<String> {
-    match Command::new("git")
-        .args(["describe", "--tags", "--dirty"])
-        .output()
-    {
-        Ok(out) if out.status.success() => {
-            let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if v.is_empty() {
-                println!(
-                    "cargo:warning=git describe succeeded but returned empty output; \
-                     falling back to CARGO_PKG_VERSION"
-                );
-                None
-            } else {
-                Some(v)
-            }
-        }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            println!(
-                "cargo:warning=git describe failed (exit {}): {}",
-                out.status,
-                stderr.trim()
-            );
-            None
-        }
-        // "No git installed" is a clean, silent fallback (e.g. tarball builds).
-        Err(e) if e.kind() == ErrorKind::NotFound => None,
-        Err(e) => {
-            println!("cargo:warning=git spawn failed ({}): {}", e.kind(), e);
-            None
         }
     }
 }

@@ -70,10 +70,17 @@ pub const BUILD_VERSION: &str = env!("BUILD_VERSION");
 /// the parse layer, and surrounding whitespace is trimmed so `"1.2.3"` and
 /// `"  1.2.3  "` compare equal.
 ///
-/// TODO(Task 2.7): when the self-update min-version gate needs real semver
-/// ordering, add `pub fn compare_semver(&self, other: &Self) -> Result<Ordering>`
-/// as a free/method API. Do NOT pre-parse into `Option<semver::Version>` in
-/// the struct — unused fields on the main type become API noise.
+/// Versioning invariants:
+/// - `Version::current()` (alias `BUILD_VERSION`) is pinned w
+///   `auto-update/Cargo.toml::[package].version` i embedded przez
+///   `build.rs`. ZAWSZE valid semver bo Cargo tego wymaga od `[package]`.
+/// - `manifest.version` / `manifest.minAutoUpdateVersion` parsowane z JSON
+///   przez `try_from = "String"` → trimmed non-empty string. Nie wymusza
+///   semver syntax na wire level (accept `"nightly-2026-04-17"` etc.),
+///   ale comparison przez [`Version::is_older_than`] parsuje jako semver
+///   w momencie compare — non-semver values compare jako "not older than
+///   anything" (safe default: pozwala install kontynuować zamiast false-
+///   positive FatalError na odd version strings).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Version(String);
@@ -88,7 +95,8 @@ impl Version {
     /// Construct from a raw string. Trims surrounding whitespace and rejects
     /// empty / whitespace-only input. Accepts any non-empty tag format
     /// (`"v1.2.3"`, `"0.1.0-beta.1"`, `"nightly-2026-04-17"`) — semver-aware
-    /// comparison is deferred to Task 2.7.
+    /// comparison through [`Self::is_older_than`] is best-effort and
+    /// gracefully degrades to `false` on non-semver values.
     pub fn parse(s: &str) -> Result<Self> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
@@ -103,6 +111,29 @@ impl Version {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Semver-aware comparison: `true` gdy `self` jest starszy niż
+    /// `other` per SemVer 2.0 ordering (numeric components + pre-release
+    /// rules). Używane w `app.rs` dla compatibility gate'u
+    /// (`BUILD_VERSION.is_older_than(manifest.minAutoUpdateVersion)`).
+    ///
+    /// **Fail-open**: gdy którakolwiek strona nie parsuje jako valid
+    /// semver (np. `"nightly-2026-04-17"`, dirty git-describe output
+    /// hypothetical fallback), zwraca `false` — safer default pozwala
+    /// update kontynuować zamiast błędnie blokować userów z exotic
+    /// version strings. Właściwy compatibility gate musi pole
+    /// `minAutoUpdateVersion` trzymać w strict semver (co Cargo + CI
+    /// gwarantują).
+    #[must_use]
+    pub fn is_older_than(&self, other: &Self) -> bool {
+        match (
+            semver::Version::parse(self.as_str()),
+            semver::Version::parse(other.as_str()),
+        ) {
+            (Ok(mine), Ok(theirs)) => mine < theirs,
+            _ => false,
+        }
     }
 }
 
@@ -396,6 +427,59 @@ mod tests {
     fn version_deserialize_rejects_empty_via_try_from() {
         let res: std::result::Result<Version, _> = serde_json::from_str("\"\"");
         assert!(res.is_err());
+    }
+
+    // --- Version::is_older_than (semver compare) ---
+
+    #[test]
+    fn is_older_than_handles_basic_semver_ordering() {
+        let a = Version::parse("1.0.0").unwrap();
+        let b = Version::parse("1.0.1").unwrap();
+        assert!(a.is_older_than(&b));
+        assert!(!b.is_older_than(&a));
+        assert!(!a.is_older_than(&a), "self-comparison must not be 'older'");
+    }
+
+    #[test]
+    fn is_older_than_respects_minor_and_major_components() {
+        let patch = Version::parse("1.2.3").unwrap();
+        let minor = Version::parse("1.3.0").unwrap();
+        let major = Version::parse("2.0.0").unwrap();
+        assert!(patch.is_older_than(&minor));
+        assert!(minor.is_older_than(&major));
+        assert!(patch.is_older_than(&major));
+        assert!(!major.is_older_than(&patch));
+    }
+
+    #[test]
+    fn is_older_than_respects_prerelease_ordering() {
+        // Per SemVer 2.0: any pre-release is older than the same X.Y.Z
+        // stable; beta.1 < beta.2 < stable.
+        let beta1 = Version::parse("1.0.0-beta.1").unwrap();
+        let beta2 = Version::parse("1.0.0-beta.2").unwrap();
+        let stable = Version::parse("1.0.0").unwrap();
+        assert!(beta1.is_older_than(&beta2));
+        assert!(beta2.is_older_than(&stable));
+        assert!(beta1.is_older_than(&stable));
+        assert!(!stable.is_older_than(&beta1));
+    }
+
+    #[test]
+    fn is_older_than_fails_open_on_non_semver_self() {
+        // Fail-open safety: dirty build strings (`nightly-X`) parse as
+        // non-semver. Comparison must return false (don't block install)
+        // rather than propagating a parse error up.
+        let dirty = Version::parse("nightly-2026-04-17").unwrap();
+        let semver = Version::parse("1.0.0").unwrap();
+        assert!(!dirty.is_older_than(&semver));
+        assert!(!semver.is_older_than(&dirty));
+    }
+
+    #[test]
+    fn is_older_than_fails_open_on_non_semver_other() {
+        let semver = Version::parse("1.0.0").unwrap();
+        let dirty = Version::parse("v1-N-gabc-dirty").unwrap();
+        assert!(!semver.is_older_than(&dirty));
     }
 
     // --- Sha256 ---

@@ -134,8 +134,13 @@ val manifest = Manifest(
     releasedAt = Instant.now().toString(),
     // Min auto-update version który potrafi zainstalować ten manifest.
     // Bumpnij gdy zmieniasz manifest schema (breaking change) albo
-    // download pipeline semantics. Na razie pinned 0.1.0 = initial.
-    minAutoUpdateVersion = "0.1.0",
+    // download pipeline semantics. Wartość TU MUSI matchować
+    // `auto-update/Cargo.toml::[package].version` dla aktualnie
+    // wydawanych builds auto-update — inaczej freshly-built
+    // auto-update binary zobaczy remote manifest jako "too old" i
+    // wpadnie w FatalError na każdym userze. Bump oba w tym samym
+    // commit.
+    minAutoUpdateVersion = "1.0.0",
     launcherExecutable = launcherExecutable,
     changelog = changelog,
     files = files,

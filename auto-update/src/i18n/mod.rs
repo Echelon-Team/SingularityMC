@@ -86,6 +86,14 @@ pub struct Strings {
     /// instead of the Debug-format default which always renders in
     /// English regardless of the selected locale.
     pub unhandled_flow_outcome: &'static str,
+    /// FatalError message surfaced when remote manifest's
+    /// `minAutoUpdateVersion` is GREATER than this binary's
+    /// `BUILD_VERSION`. Means schema / install pipeline got breaking
+    /// changes and the installed auto-update can't safely apply the
+    /// new manifest. User needs to download a fresh installer
+    /// manually — self-update-from-remote for this case is a future
+    /// enhancement requiring SHA-pinned binary URLs in the manifest.
+    pub auto_update_too_old: &'static str,
 }
 
 /// Resolve a stored [`LanguagePreference`] to a concrete [`Lang`].
@@ -223,6 +231,7 @@ mod tests {
                 close,
                 no_offline_install,
                 unhandled_flow_outcome,
+                auto_update_too_old,
             } = *strings(lang);
             for (name, v) in [
                 ("checking", checking),
@@ -237,6 +246,7 @@ mod tests {
                 ("close", close),
                 ("no_offline_install", no_offline_install),
                 ("unhandled_flow_outcome", unhandled_flow_outcome),
+                ("auto_update_too_old", auto_update_too_old),
             ] {
                 assert!(!v.is_empty(), "{lang:?}.{name} must not be empty");
             }

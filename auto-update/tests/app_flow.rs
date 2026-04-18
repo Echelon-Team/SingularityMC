@@ -979,6 +979,85 @@ async fn download_failed_auto_recovers_when_retry_succeeds() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn manifest_requiring_newer_auto_update_surfaces_fatal() {
+    // Manifest z `minAutoUpdateVersion` > `BUILD_VERSION` → gate w
+    // `process_release` rzuca `UpdaterError::InvalidConfig` + ustawia
+    // FatalError z lokalizowanym `auto_update_too_old`. Test pinuje
+    // dokładnie tę ścieżkę: permanent error classifier kwalifikuje
+    // InvalidConfig jako permanent, więc flow nigdy nie wchodzi w
+    // park loop — straight FatalError + return.
+    //
+    // Symuluje breaking manifest schema w przyszłym release: my
+    // jesteśmy na 1.0.0 (Cargo.toml auto-update), manifest od "future"
+    // release wymaga ≥99.0.0 — stary auto-update musi fail loud.
+    let install_dir = tempfile::tempdir().unwrap();
+
+    let server = MockServer::start().await;
+    let manifest_url =
+        format!("{}/download/manifest-windows.json", server.uri());
+
+    Mock::given(method("GET"))
+        .and(path(latest_release_path()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(release_json("v0.1.0", &manifest_url)),
+        )
+        .mount(&server)
+        .await;
+    // Manifest z minAutoUpdateVersion=99.0.0 + valid pozostałe pola.
+    // Future-breaking — nasz BUILD_VERSION 1.0.0 < 99.0.0 → gate fires.
+    let m_json = r#"{
+        "version":"99.0.0","os":"windows","releasedAt":"2099-01-01T00:00:00Z",
+        "minAutoUpdateVersion":"99.0.0","launcherExecutable":"launcher/app.jar",
+        "changelog":"- future release",
+        "files":[]
+    }"#;
+    Mock::given(method("GET"))
+        .and(path("/download/manifest-windows.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(Mutex::new(UiState::Checking));
+    let (_user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
+    let cfg = test_config(server.uri());
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_update_flow_with_config(
+            install_dir.path().to_path_buf(),
+            Channel::Stable,
+            OsTarget::Windows,
+            Arc::clone(&state),
+            &mut user_rx,
+            cfg,
+        ),
+    )
+    .await
+    .expect("compatibility gate must short-circuit within 10 s");
+
+    // Permanent error classifier treats InvalidConfig as permanent →
+    // flow exits with Err(InvalidConfig) + FatalError state set.
+    assert!(
+        matches!(result, Err(UpdaterError::InvalidConfig(_))),
+        "expected InvalidConfig from min-version gate, got {result:?}"
+    );
+    let final_state = state.lock().unwrap().clone();
+    let UiState::FatalError { message } = final_state else {
+        panic!("expected FatalError terminal state, got {final_state:?}");
+    };
+    // Message MUST be lokalizowany `auto_update_too_old` (EN default w
+    // test_config). Previous behaviour was raw Debug-format of
+    // InvalidConfig — now swapped for localized string before the
+    // permanent-error set_state ever fires.
+    assert!(
+        message.contains("too old"),
+        "FatalError message must be localized `auto_update_too_old` \
+         (en: 'This installer is too old ...'), got: {message}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn temp_dir_pre_clean_wipes_stale_content_on_entry() {
     // Pre-existing `.tmp-update/` content from a crashed prior run
     // must be wiped when `process_release` starts.

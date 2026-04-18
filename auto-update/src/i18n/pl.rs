@@ -17,4 +17,6 @@ pub const STRINGS: &Strings = &Strings {
         "Pobieranie nieudane, a lokalna instalacja nie jest dostępna do trybu offline.",
     unhandled_flow_outcome:
         "Nieoczekiwany stan aktualizacji. Zgłoś problem na Discordzie.",
+    auto_update_too_old:
+        "Ten installer jest za stary żeby bezpiecznie zainstalować nową wersję. Pobierz świeży installer z Discorda.",
 };

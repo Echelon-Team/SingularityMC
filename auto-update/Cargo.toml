@@ -1,6 +1,18 @@
 [package]
 name = "singularitymc-auto-update"
-version = "0.1.0"
+# Wersja AUTO-UPDATE binary — NIEZALEŻNA od wersji launchera.
+#
+# Launcher używa swojego git-tag-based schematu (`v0.1.0` → `v0.2.0` →
+# ...), auto-update jest bumpowany RĘCZNIE tutaj gdy zmienia się
+# manifest schema / download pipeline / install semantyka — zdarzenia
+# rzadkie (raz na 6-12 miesięcy). Bump wymusza też update w
+# `scripts/generate-manifest.main.kts::minAutoUpdateVersion` żeby
+# remote manifest blokował stare auto-update binaries.
+#
+# Ta wersja jest embedowana w exe przez `build.rs` → env `BUILD_VERSION`
+# → stałą `crate::BUILD_VERSION` używaną przez main.rs `--version` +
+# update flow's minAutoUpdateVersion compatibility check.
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Auto-update bootstrap for the SingularityMC launcher"
@@ -103,6 +115,14 @@ atomicwrites = "0.4"
 # amplification. Full-jitter sleep = uniform(0, base*2^attempt), AWS's
 # recommended pattern.
 rand = "0.9"
+
+# Semver-aware version comparison for `Version::is_older_than`. Used by
+# `app.rs::process_release` to gate update install on
+# `manifest.minAutoUpdateVersion`. Crate is tiny + battle-tested;
+# rolling our own semver comparator (lexicographic + numeric components
+# + pre-release ordering rules per SemVer 2.0) is a footgun we don't
+# need.
+semver = "1"
 
 # Raw window handle access (Win32 HWND from eframe's CreationContext) so we
 # can call DwmSetWindowAttribute for Win11 rounded corners. eframe 0.34 pulls
