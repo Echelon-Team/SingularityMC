@@ -32,6 +32,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Surface
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -93,6 +94,24 @@ fun ModrinthScreen(
             fontWeight = FontWeight.Bold,
             color = extra.textPrimary
         )
+
+        // Offline mode banner — spec §4.11. ModrinthClientImpl returns
+        // empty list when OfflineMode.isEnabled(), so the search results
+        // are always empty in this mode. Banner tells the user WHY
+        // instead of making them think their query has zero matches.
+        if (com.singularity.launcher.config.OfflineMode.isEnabled()) {
+            Spacer(Modifier.height(8.dp))
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = i18n["modrinth.offline.banner"],
+                    modifier = Modifier.padding(12.dp),
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+        }
 
         Spacer(Modifier.height(12.dp))
 

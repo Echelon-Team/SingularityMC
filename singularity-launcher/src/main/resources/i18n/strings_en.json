@@ -91,6 +91,7 @@
   "home.continue.time_ago.days": "%dd ago",
   "home.continue.time_ago.long": "long ago",
   "home.continue.subtitle_pattern": "%s — MC %s %s — played %s",
+  "modrinth.offline.banner": "Offline mode: Modrinth unavailable",
   "home.news.title": "News",
   "home.news.loading": "Loading...",
   "home.news.empty": "No news available",
@@ -230,7 +231,6 @@
   "modrinth.scanning": "Security scan",
   "modrinth.install_error": "Install error",
   "diagnostics.benchmark.info_banner": "Benchmark requires a running game with SingularityMC agent. Launch an Enhanced instance to unlock.",
-  "update.available": "Update available",
   "update.dismiss": "Later",
 
   "account.title": "Account management",

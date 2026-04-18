@@ -262,4 +262,46 @@ class ModrinthClientImplTest {
             "2D array format: $decoded"
         )
     }
+
+    // --- Offline mode gate (spec §4.11) ---
+
+    @Test
+    fun `search returns empty list without hitting network when OfflineMode enabled`() = runTest {
+        var networkHit = false
+        val engine = MockEngine { request ->
+            networkHit = true
+            respond("""{"hits":[]}""", HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        val client = ModrinthClientImpl(clientWithMock(engine))
+
+        com.singularity.launcher.config.OfflineMode.parseArgs(arrayOf("--offline"))
+        try {
+            val result = client.search("anything")
+            assertTrue(result.isSuccess, "offline path must return success (intentional gate, not failure)")
+            assertEquals(emptyList<ModrinthSearchHit>(), result.getOrNull())
+            assertFalse(networkHit, "must NOT hit api.modrinth.com when offline")
+        } finally {
+            com.singularity.launcher.config.OfflineMode.reset()
+        }
+    }
+
+    @Test
+    fun `getVersions returns empty list without hitting network when OfflineMode enabled`() = runTest {
+        var networkHit = false
+        val engine = MockEngine { request ->
+            networkHit = true
+            respond("""[]""", HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        val client = ModrinthClientImpl(clientWithMock(engine))
+
+        com.singularity.launcher.config.OfflineMode.parseArgs(arrayOf("--offline"))
+        try {
+            val result = client.getVersions("some-project-id")
+            assertTrue(result.isSuccess)
+            assertEquals(emptyList<ModrinthVersion>(), result.getOrNull())
+            assertFalse(networkHit, "must NOT hit Modrinth when offline")
+        } finally {
+            com.singularity.launcher.config.OfflineMode.reset()
+        }
+    }
 }

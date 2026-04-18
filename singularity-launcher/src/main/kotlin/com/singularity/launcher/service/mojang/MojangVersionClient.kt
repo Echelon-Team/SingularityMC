@@ -1,5 +1,6 @@
 package com.singularity.launcher.service.mojang
 
+import com.singularity.launcher.config.OfflineMode
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
@@ -22,16 +23,32 @@ class MojangVersionClient(private val httpClient: HttpClient) {
 
     /**
      * Fetch full version manifest (release + snapshot + old).
+     *
+     * Offline mode (spec §4.11): zwraca pusty manifest zamiast uderzać
+     * piston-meta.mojang.com. UI Create-Instance wykryje pustą listę +
+     * pokaże banner "Tryb offline: lista wersji Minecraft niedostępna
+     * — nie można utworzyć nowej instancji". Istniejące instancje
+     * działają normalnie bo już mają cached JARy w `versions/`.
      */
-    suspend fun fetchManifest(): Result<VersionManifest> = try {
-        val response = httpClient.get(MANIFEST_URL)
-        if (response.status == HttpStatusCode.OK) {
-            Result.success(response.body<VersionManifest>())
-        } else {
-            Result.failure(RuntimeException("Mojang manifest HTTP ${response.status.value}"))
+    suspend fun fetchManifest(): Result<VersionManifest> {
+        if (OfflineMode.isEnabled()) {
+            return Result.success(
+                VersionManifest(
+                    latest = LatestVersions(release = "", snapshot = ""),
+                    versions = emptyList(),
+                ),
+            )
         }
-    } catch (e: Exception) {
-        Result.failure(e)
+        return try {
+            val response = httpClient.get(MANIFEST_URL)
+            if (response.status == HttpStatusCode.OK) {
+                Result.success(response.body<VersionManifest>())
+            } else {
+                Result.failure(RuntimeException("Mojang manifest HTTP ${response.status.value}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     /**

@@ -6,14 +6,32 @@ import org.slf4j.LoggerFactory
  * Runtime flag set via CLI arg `--offline` (passed by auto-update.exe when user chose
  * OFFLINE MODE button in the update UI, e.g. after failed update or no internet retry).
  *
- * When enabled, launcher disables:
- * - Modrinth integration (no API calls, UI shows "offline")
- * - Microsoft/Mojang online login attempts (existing tokens still usable)
- * - News feed fetching from GitHub
- * - Auto-update check triggering (auto-update.exe already knows)
- * - Telemetry transmission
+ * **Obecnie honorowane w kodzie:**
+ * - News feed fetching from GitHub — `HomeViewModel` skips repo fetch
+ *   → `ReleasesState.Offline` → HomeScreen news section renders
+ *   `home.news.offline` banner.
+ * - Modrinth integration — `ModrinthClientImpl.search` / `.getVersions`
+ *   early-return `Result.success(emptyList())`. UI (ModrinthScreen) shows
+ *   localized "tryb offline" banner instead of API error.
+ * - Mojang piston-meta version fetch — `MojangVersionClient.fetchManifest`
+ *   returns empty manifest. Create-Instance dialog UI detects empty list
+ *   + shows banner ("lista wersji MC niedostępna"); istniejące instancje
+ *   działają dalej z cached JARs w `versions/`.
  *
- * Remains functional:
+ * **NIE honorowane (intentional — subsystemy nic online nie robią):**
+ * - Microsoft Auth: stub per Sub 4 scope — interfejs `AuthManager` nie
+ *   ma `signInWithMicrosoft()` metody, UI (Account overlay) wyświetla
+ *   disabled button z bannerem "będzie w przyszłości". Planowana pełna
+ *   implementacja w przyszłym sub-projekcie; wtedy dodać gate tutaj.
+ * - Telemetry transmission: pole `LauncherSettings.telemetryEnabled` +
+ *   onboarding toggle istnieją ale brak sender class — żadne dane nie
+ *   są wysyłane na backend. Planowane w przyszłości; wtedy dodać gate.
+ * - Launcher-side auto-update check (`integration/AutoUpdater.kt`):
+ *   **usunięte 2026-04-18** — redundant z `auto-update.exe` który już
+ *   check-uje updates przed spawn launcher. Nie potrzebuje gate bo
+ *   subsystem removed.
+ *
+ * **Pozostaje funkcjonalne offline:**
  * - Existing instances (launch / configure locally)
  * - LAN server connections
  * - Locally cached data (themes, settings, accounts in cache)

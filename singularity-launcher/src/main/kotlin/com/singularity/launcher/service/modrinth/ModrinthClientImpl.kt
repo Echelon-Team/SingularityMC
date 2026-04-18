@@ -14,6 +14,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import com.singularity.launcher.config.OfflineMode
 import java.net.URLEncoder
 
 /**
@@ -71,6 +72,14 @@ class ModrinthClientImpl(
         offset: Int,
         sort: String
     ): Result<List<ModrinthSearchHit>> {
+        // Offline mode: spec §4.11 wymaga że Modrinth integration jest
+        // wyłączone gdy launcher uruchomiony z `--offline`. Zwracamy
+        // pustą listę zamiast uderzać api.modrinth.com → UI pokazuje
+        // banner "Tryb offline: Modrinth niedostępny". Failure byłoby
+        // wrong semantic (no network error, intentional gate).
+        if (OfflineMode.isEnabled()) {
+            return Result.success(emptyList())
+        }
         return try {
             val encodedQuery = URLEncoder.encode(query, "UTF-8")
             val facetsJson = buildFacetsJson(facets)
@@ -107,6 +116,10 @@ class ModrinthClientImpl(
         gameVersions: List<String>,
         loaders: List<String>
     ): Result<List<ModrinthVersion>> {
+        // Same offline gate jako search() — see comment there.
+        if (OfflineMode.isEnabled()) {
+            return Result.success(emptyList())
+        }
         return try {
             val encodedProjectId = URLEncoder.encode(projectId, "UTF-8")
             val url = buildString {

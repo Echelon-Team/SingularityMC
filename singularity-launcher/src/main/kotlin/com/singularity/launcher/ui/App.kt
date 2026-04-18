@@ -36,7 +36,6 @@ import com.singularity.launcher.service.auth.AuthManagerImpl
 import com.singularity.launcher.service.ipc.IpcClient
 import com.singularity.launcher.service.ipc.IpcClientReal
 import org.slf4j.LoggerFactory
-import com.singularity.launcher.integration.AutoUpdater
 import com.singularity.launcher.integration.DiscordRpcManager
 import com.singularity.launcher.onboarding.HardwareDetector
 import com.singularity.launcher.onboarding.OnboardingViewModel
@@ -176,13 +175,6 @@ fun App() {
         discordRpc.initialize()
         discordRpc.updatePresence(DiscordRpcManager.PresenceState(isPlaying = false))
         onDispose { discordRpc.shutdown() }
-    }
-
-    // Auto-updater (check on startup)
-    val autoUpdater = remember { AutoUpdater(httpClient, currentVersion = "1.0.0") }
-    var updateAvailable by remember { mutableStateOf<AutoUpdater.UpdateAvailable?>(null) }
-    LaunchedEffect(Unit) {
-        updateAvailable = autoUpdater.checkForUpdates()
     }
 
     // Onboarding (first-time setup)
@@ -371,24 +363,12 @@ fun App() {
                     )
                 }
 
-                // Update notification — simple Snackbar-style at bottom
-                if (updateAvailable != null) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.BottomCenter
-                    ) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.padding(16.dp)
-                        ) {
-                            Text(
-                                text = "${LocalI18n.current["update.available"]}: ${updateAvailable!!.version}",
-                                modifier = Modifier.padding(12.dp),
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                    }
-                }
+                // [AutoUpdater snackbar removed 2026-04-18 — was redundant
+                // with `auto-update.exe` which already checks for launcher
+                // updates BEFORE spawning the launcher. The old in-launcher
+                // notification hit GitHub API again on every startup for no
+                // added value, so `integration/AutoUpdater.kt` + its test +
+                // this UI block were dropped wholesale.]
             }
         }
     }

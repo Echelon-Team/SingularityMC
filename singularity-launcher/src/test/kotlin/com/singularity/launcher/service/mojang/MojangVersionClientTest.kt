@@ -209,4 +209,54 @@ class MojangVersionClientTest {
         assertNotNull(details.libraries[0].rules)
         assertEquals("allow", details.libraries[0].rules!![0].action)
     }
+
+    // --- Offline mode gate (spec §4.11) ---
+
+    @Test
+    fun `fetchManifest returns empty manifest without hitting Mojang when OfflineMode enabled`() = runTest {
+        var networkHit = false
+        val engine = MockEngine { request ->
+            networkHit = true
+            respond("""{"latest":{"release":"x","snapshot":"y"},"versions":[]}""",
+                HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        val client = MojangVersionClient(clientWithMock(engine))
+
+        com.singularity.launcher.config.OfflineMode.parseArgs(arrayOf("--offline"))
+        try {
+            val result = client.fetchManifest()
+            assertTrue(result.isSuccess, "offline path returns Result.success with empty manifest, not failure")
+            val manifest = result.getOrNull()!!
+            assertEquals(emptyList<ManifestVersion>(), manifest.versions)
+            // `latest` fields are ""/"" placeholders — UI treats empty
+            // list as "no versions available" which is the gate signal.
+            assertEquals("", manifest.latest.release)
+            assertFalse(networkHit, "must NOT hit piston-meta.mojang.com when offline")
+        } finally {
+            com.singularity.launcher.config.OfflineMode.reset()
+        }
+    }
+
+    @Test
+    fun `fetchReleaseVersions returns empty list via empty manifest when OfflineMode enabled`() = runTest {
+        // fetchReleaseVersions internally calls fetchManifest + filters —
+        // must also honour the offline gate transitively.
+        var networkHit = false
+        val engine = MockEngine {
+            networkHit = true
+            respond("""{"latest":{"release":"x","snapshot":"y"},"versions":[]}""",
+                HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        val client = MojangVersionClient(clientWithMock(engine))
+
+        com.singularity.launcher.config.OfflineMode.parseArgs(arrayOf("--offline"))
+        try {
+            val result = client.fetchReleaseVersions()
+            assertTrue(result.isSuccess)
+            assertEquals(emptyList<ManifestVersion>(), result.getOrNull())
+            assertFalse(networkHit)
+        } finally {
+            com.singularity.launcher.config.OfflineMode.reset()
+        }
+    }
 }
