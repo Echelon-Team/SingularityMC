@@ -163,19 +163,18 @@ impl eframe::App for AutoUpdateApp {
             remaining.min,
             egui::pos2(remaining.max.x, remaining.max.y - BUTTON_ROW_HEIGHT),
         );
-        // Centre the buttons by making the scope rect itself only as
-        // wide as the button row needs, positioned at the horizontal
-        // centre of the window. `Layout::left_to_right(Align::Center)`
-        // on its own anchors items to the left of whatever Ui rect it
-        // gets — so the centering has to come from the rect, not the
-        // layout.
-        let buttons_width = estimate_buttons_width(&current_state);
+        // Buttons row spans the full remaining width; horizontal
+        // centring is then handled by the layout + wrap pattern
+        // inside (see the scope below). Full-width rect avoids a
+        // width-estimate: a too-small estimate leaves buttons offset
+        // right (they overflow the centred rect), a too-large one
+        // leaves them offset left. Trick: outer `top_down(Center)`
+        // cross-centres a single child in the full-width rect, and
+        // `ui.horizontal` inside is that single child — so the row's
+        // natural width ends up horizontally centred.
         let buttons_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                remaining.center().x - buttons_width / 2.0,
-                remaining.max.y - BUTTON_ROW_HEIGHT,
-            ),
-            egui::vec2(buttons_width, BUTTON_ROW_HEIGHT),
+            egui::pos2(remaining.min.x, remaining.max.y - BUTTON_ROW_HEIGHT),
+            egui::vec2(remaining.width(), BUTTON_ROW_HEIGHT),
         );
 
         // Middle content. egui has no built-in "centre multiple stacked
@@ -197,21 +196,24 @@ impl eframe::App for AutoUpdateApp {
             },
         );
 
-        // Bottom button row — rect itself is centred horizontally, the
-        // `left_to_right` layout then packs buttons inside it with
-        // normal spacing. `apply_button_theme` MUST run inside this
-        // inner scope: `UiBuilder::new()` starts a fresh child Ui and
-        // the visuals mutation we'd do on the outer `ui` doesn't
-        // propagate — that's why the previous version kept rendering
-        // default-grey buttons even though `apply_button_theme` was
-        // called.
+        // Bottom button row — full-width rect, `top_down(Center)` on
+        // the outer scope cross-centres its single child (the
+        // `ui.horizontal` inside), and `ui.horizontal` lays out the
+        // individual buttons left-to-right at their natural widths.
+        // Net effect: a perfectly-centred row regardless of how many
+        // buttons or how long their labels are, without a width
+        // estimate. `apply_button_theme` MUST run inside this inner
+        // scope: `UiBuilder::new()` starts a fresh child Ui that
+        // doesn't inherit visuals mutations from the parent Ui.
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(buttons_rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                .layout(egui::Layout::top_down(egui::Align::Center)),
             |ui| {
                 apply_button_theme(ui);
-                render_buttons(ui, &current_state, s, &self.on_offline_mode);
+                ui.horizontal(|ui| {
+                    render_buttons(ui, &current_state, s, &self.on_offline_mode);
+                });
             },
         );
 
@@ -332,25 +334,6 @@ fn estimate_content_height(state: &UiState) -> f32 {
         | UiState::DownloadFailed { .. } => 46.0,
         // FatalError: 1 label + spacer + wrapped message — worst case.
         UiState::FatalError { .. } => 72.0,
-    }
-}
-
-/// Approx width (px) of the button row per state — used to size the
-/// scope rect so it can be positioned horizontally-centred. egui button
-/// widths depend on text + padding; hand-eyed estimates from the PL/EN
-/// labels with a cushion for text size variance.
-fn estimate_buttons_width(state: &UiState) -> f32 {
-    // Wyjdź ≈ 60, Pomoc ≈ 60, TRYB OFFLINE ≈ 115; 4 px spacing.
-    match state {
-        UiState::OfflineAvailable { .. } => 260.0,
-        UiState::DownloadFailed { has_offline: true, .. } => 260.0,
-        UiState::NoInternet { .. }
-        | UiState::FatalError { .. }
-        | UiState::DownloadFailed { has_offline: false, .. } => 140.0,
-        // Work states — buttons row is empty but the estimate is used
-        // to size the (invisible) rect. Any value works; keep it
-        // modest so it doesn't affect nothing.
-        _ => 80.0,
     }
 }
 
