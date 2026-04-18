@@ -101,10 +101,15 @@ jobs:
 
       - name: Install AppImage tools (Linux)
         if: matrix.os == 'ubuntu-latest'
+        # appimagetool pochodzi z `AppImage/appimagetool` repo — stare
+        # `AppImage/AppImageKit/releases/continuous` było oznaczone
+        # "obsolete" w 2023 i nie jest już aktywnie rebuildowane;
+        # docelowo tag disappear i wget 404. Bieżący repo/tag działa
+        # i dostaje regularne updates (last publish 2025-12).
         run: |
           sudo apt-get update
           sudo apt-get install -y libfuse2
-          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /usr/local/bin/appimagetool
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O /usr/local/bin/appimagetool
           chmod +x /usr/local/bin/appimagetool
 
       - name: Cache Gradle
@@ -186,21 +191,41 @@ jobs:
 
       - name: Prepare release assets
         shell: bash
+        # set -e + explicit guards — żaden krok nie swallowa failure
+        # via `|| true`. Gdy upstream matrix job build-windows/-linux
+        # nie wyprodukował installera (np. iscc wysypał się z niezielonym
+        # dependency), release nie idzie dalej z niekompletnym artifactem.
         run: |
+          set -euo pipefail
           mkdir -p release/
-          # Installer per OS (raw exe / AppImage).
-          cp artifacts/build-windows/installer/SingularityMC-Setup-*.exe release/ || true
-          cp artifacts/build-linux/installer/SingularityMC-*.AppImage release/ || true
-          # Per-OS manifests.
+          # Installer per OS — sprawdź że istnieje PRZED cp. `ls ... >/dev/null`
+          # jako glob-exists test; bez `|| true` exit 1 wysadzi release job.
+          if ! ls artifacts/build-windows/installer/SingularityMC-Setup-*.exe >/dev/null 2>&1; then
+            echo "::error::Windows installer artifact missing — iscc failed upstream or path drift" >&2
+            exit 1
+          fi
+          cp artifacts/build-windows/installer/SingularityMC-Setup-*.exe release/
+          if ! ls artifacts/build-linux/installer/SingularityMC-*.AppImage >/dev/null 2>&1; then
+            echo "::error::Linux AppImage artifact missing — build-appimage.sh failed upstream" >&2
+            exit 1
+          fi
+          cp artifacts/build-linux/installer/SingularityMC-*.AppImage release/
+          # Per-OS manifests — brak guardów bo ścieżka stała, a ewentualny
+          # brak to sygnał że `kotlin scripts/generate-manifest...` failed
+          # (i wtedy upstream job i tak powinien być czerwony).
           cp artifacts/build-windows/manifest-windows.json release/
           cp artifacts/build-linux/manifest-linux.json release/
-          # Auto-update binaries per OS (re-named z `singularitymc-` prefix usuniętym,
-          # dopisanym OS suffix żeby user nie pobierał złej arch).
+          # Auto-update binaries per OS (re-named z `singularitymc-` prefix
+          # usuniętym, dopisanym OS suffix żeby user nie pobierał złej arch).
           cp artifacts/build-windows/auto-update/target/release/singularitymc-auto-update.exe release/auto-update-windows.exe
           cp artifacts/build-linux/auto-update/target/release/singularitymc-auto-update release/auto-update-linux
-          # Per-file launcher assets — OS-prefix dla specific, shared bez prefix.
+          # Per-file launcher assets — OS-prefix `windows`/`linux` MUSI być
+          # dokładnie tą samą wartością co osSuffix przekazywany do
+          # generate-manifest.main.kts (manifest URL pattern: $os-$filename).
+          # Poprzednia wersja użyła `win` tu + `windows` w Kotlin → 404
+          # każdego OS-specific download.
           chmod +x scripts/copy-release-files.sh
-          bash scripts/copy-release-files.sh artifacts/build-windows/singularity-launcher/build/compose/binaries/main/app/SingularityMC release/ win
+          bash scripts/copy-release-files.sh artifacts/build-windows/singularity-launcher/build/compose/binaries/main/app/SingularityMC release/ windows
           bash scripts/copy-release-files.sh artifacts/build-linux/singularity-launcher/build/compose/binaries/main/app/SingularityMC release/ linux
           echo "--- Release assets ---"
           ls -lah release/ | head -40

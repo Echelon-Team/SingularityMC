@@ -33,13 +33,18 @@ AppVersion={#VERSION}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 ; %LocalAppData%\Programs — nie wymaga admin, user-scoped install.
-; `PrivilegesRequired=lowest` = no UAC prompt. User może wybrać dialog
-; elevation jeśli chce Program Files install.
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; `PrivilegesRequired=lowest` — per-user install bez UAC. Zdjęcie
+; `PrivilegesRequiredOverridesAllowed=dialog` celowe: ten flag
+; pozwalał userowi wybrać "install for all users" co wymuszało UAC
+; elevation, ALE `DefaultDirName={localappdata}\...` nie adaptował
+; się do elevated install (zawsze user-scoped location). Net effect:
+; user klika "all users", instaluje w userze, miesza semantykę.
+; Jeśli kiedyś będzie potrzeba per-machine install, przełączyć
+; DefaultDirName na `{autopf}\SingularityMC` które honoruje wybór.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=.
 OutputBaseFilename=SingularityMC-Setup-{#VERSION}
 Compression=lzma2
@@ -114,7 +119,18 @@ begin
       'Jeśli wybierzesz Nie, dane zostaną zachowane dla przyszłej ponownej instalacji.',
       mbConfirmation, MB_YESNO or MB_DEFBUTTON2);
     if Answer = IDYES then begin
-      DelTree(UserDataDir, True, True, True);
+      // DelTree zwraca False gdy którykolwiek plik/katalog nie dał się
+      // usunąć (launcher wciąż uruchomiony trzyma handle, AV scan,
+      // shared-lock). Bez tego checka uninstaller raportował success
+      // a user data zostawały na dysku mimo explicit "Tak, usuń" —
+      // użytkownikowi wydaje się że dane skasowane, a są nadal w
+      // %APPDATA%. Istotne dla GDPR "right to erasure".
+      if not DelTree(UserDataDir, True, True, True) then begin
+        MsgBox(
+          'Nie udało się usunąć wszystkich danych w ' + UserDataDir + #13#10 + #13#10 +
+          'Zamknij launcher (jeśli wciąż uruchomiony) i usuń katalog ręcznie.',
+          mbError, MB_OK);
+      end;
     end;
   end;
 end;

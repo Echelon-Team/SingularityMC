@@ -31,14 +31,27 @@ OS=$3
 find "$SRC" -type f | while read -r file; do
     rel="${file#$SRC/}"
     basename=$(basename "$file")
-    # OS-specific jeśli: .exe (Win binary), /runtime/ (bundled JRE),
-    # albo NIE jest .jar / .cfg / w /app/ (shared bucket).
+    # Klasyfikacja MUSI matchować `generate-manifest.main.kts::isOsSpecific`
+    # byte-for-byte. Kotlin:
+    #   endsWith(".exe") || contains("/runtime/")
+    #       || (!endsWith(".jar") && !endsWith(".cfg") && !contains("/app/"))
+    # → shared iff NOT exe AND NOT /runtime/ AND (jar ANYWHERE OR cfg
+    #   ANYWHERE OR pod /app/). Poniższa logika bash to dokładnie
+    #   to samo: poprzednia wersja gated shared tylko na `*/app/*.cfg`
+    #   co dawało drift — root-level `SingularityMC.cfg` i plik typu
+    #   `launcher/app/subfolder/data.bin` Kotlin traktował jako
+    #   shared, bash jako OS-specific → manifest URL wskazywał na
+    #   asset którego nie ma w Release → 404 każdego auto-update.
     if [[ "$rel" == *.exe ]] || [[ "$rel" == */runtime/* ]] || \
-       { [[ "$rel" != *.jar ]] && [[ "$rel" != */app/*.cfg ]]; }; then
+       { [[ "$rel" != *.jar ]] && [[ "$rel" != *.cfg ]] && [[ "$rel" != */app/* ]]; }; then
         cp "$file" "$DEST/$OS-$basename"
     else
-        # Shared JAR / cfg — jedna kopia wystarczy. Jeśli drugi OS
-        # build już skopiował, `cp -n` bezpiecznie no-op.
-        cp -n "$file" "$DEST/$basename" 2>/dev/null || true
+        # Shared JAR / cfg / plik pod /app/ — jedna kopia wystarczy.
+        # Pierwszy OS wygrywa, drugi skip. Explicit existence check
+        # zamiast `cp -n || true` który zagryzał real errors
+        # (permission denied, no space, destination is a directory).
+        if [[ ! -f "$DEST/$basename" ]]; then
+            cp "$file" "$DEST/$basename"
+        fi
     fi
 done
