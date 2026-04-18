@@ -491,11 +491,14 @@ async fn api_auto_retries_on_second_tick_after_first_failure() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn manifest_parse_error_surfaces_as_download_failed_then_fatal() {
+async fn manifest_parse_error_short_circuits_to_fatal() {
     // Malformed manifest body (200 OK with bad JSON) → UpdaterError::Json.
-    // That now flows through park_on_download_failure → DownloadFailed;
-    // with no local manifest + user "clicks" Offline (via channel), the
-    // flow surfaces FatalError + NotFound per the park logic.
+    // Json is permanent — the classifier short-circuits straight from
+    // process_release's entry path to FatalError, WITHOUT entering the
+    // park loop or waiting for any user click. A mutation flipping Json
+    // back to transient would re-enter the park loop and the terminal
+    // result would change to NotFound (from the dispatcher's no-local
+    // branch), caught by the Err(Json) assertion below.
     let install_dir = tempfile::tempdir().unwrap();
 
     let server = MockServer::start().await;
@@ -507,7 +510,8 @@ async fn manifest_parse_error_surfaces_as_download_failed_then_fatal() {
         .respond_with(ResponseTemplate::new(200).set_body_string(r_json))
         .mount(&server)
         .await;
-    // Broken manifest — missing required fields. `Manifest::parse` fails.
+    // Broken manifest — missing required fields. `Manifest::parse` fails
+    // via `serde_json::from_str` → `UpdaterError::Json(_)`.
     Mock::given(method("GET"))
         .and(path("/download/manifest-windows.json"))
         .respond_with(
@@ -518,43 +522,31 @@ async fn manifest_parse_error_surfaces_as_download_failed_then_fatal() {
         .await;
 
     let state = Arc::new(Mutex::new(UiState::Checking));
-    let (user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
-    let state_bg = Arc::clone(&state);
-    let install_path = install_dir.path().to_path_buf();
+    let (_user_tx, mut user_rx) = mpsc::channel::<UserAction>(8);
     let cfg = test_config(server.uri());
 
-    let flow_handle = tokio::spawn(async move {
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
         run_update_flow_with_config(
-            install_path,
+            install_dir.path().to_path_buf(),
             Channel::Stable,
             OsTarget::Windows,
-            state_bg,
+            Arc::clone(&state),
             &mut user_rx,
             cfg,
-        )
-        .await
-    });
-
-    wait_for_state_matching(
-        &state,
-        |s| matches!(s, UiState::DownloadFailed { .. }),
-        "DownloadFailed",
+        ),
     )
-    .await;
+    .await
+    .expect("permanent error must short-circuit within 10 s");
 
-    user_tx.send(UserAction::Offline).await.unwrap();
-
-    let result = flow_handle.await.unwrap();
-    // Offline fallback with no local manifest → NotFound; terminal
-    // state must be FatalError (park_on_download_failure sets it).
     assert!(
-        matches!(result, Err(UpdaterError::NotFound(_))),
-        "expected NotFound after Offline without local manifest, got {result:?}"
+        matches!(result, Err(UpdaterError::Json(_))),
+        "expected Json (malformed manifest is permanent), got {result:?}"
     );
     let final_state = state.lock().unwrap().clone();
     assert!(
         matches!(final_state, UiState::FatalError { .. }),
-        "expected FatalError terminal state, got {final_state:?}"
+        "expected FatalError terminal state after permanent short-circuit, got {final_state:?}"
     );
 }
 
@@ -753,9 +745,14 @@ async fn user_offline_click_in_download_failed_returns_launcher_path() {
     let server = MockServer::start().await;
     let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
 
-    // API + manifest return 200, but the MANIFEST payload is malformed
-    // — parse error surfaces via process_release → DownloadFailed with
-    // has_offline=true (local is seeded). User then clicks Offline.
+    // API 200, manifest endpoint 500 → process_release fails with
+    // Network (transient under the classifier) → park_on_download_failure
+    // enters the retry loop with has_offline=true (local is seeded).
+    // Earlier revisions of this test used a malformed-JSON fixture; that
+    // now classifies as Json → permanent and short-circuits before the
+    // park loop, so it no longer exercised the download-dispatcher path
+    // this test is meant to cover. Switching to 500 preserves the
+    // coverage with a genuinely transient error.
     Mock::given(method("GET"))
         .and(path(latest_release_path()))
         .respond_with(
@@ -766,9 +763,7 @@ async fn user_offline_click_in_download_failed_returns_launcher_path() {
         .await;
     Mock::given(method("GET"))
         .and(path("/download/manifest-windows.json"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(r#"{"version":"0.1.0"}"#),
-        )
+        .respond_with(ResponseTemplate::new(500))
         .mount(&server)
         .await;
 
@@ -797,13 +792,6 @@ async fn user_offline_click_in_download_failed_returns_launcher_path() {
     )
     .await;
 
-    // Malformed manifest is permanent under the new classification —
-    // `is_permanent_error` short-circuits to FatalError BEFORE
-    // entering park_on_download_failure's retry loop. But wait — a
-    // Json parse error is UpdaterError::Json, NOT Manifest. So it
-    // IS transient-classified and DOES enter the park loop. User's
-    // Offline click then takes the dispatcher's Offline-with-local
-    // branch.
     user_tx.send(UserAction::Offline).await.unwrap();
 
     let result = tokio::time::timeout(Duration::from_secs(10), flow_handle)

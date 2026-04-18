@@ -319,6 +319,14 @@ pub async fn run_update_flow_with_config(
 /// retry loops to `FatalError` instead of hammering a broken artifact
 /// forever (which would also waste every client's bandwidth if the
 /// broken artifact is a remote manifest).
+///
+/// `Json` is permanent because `Manifest::parse` wraps
+/// `serde_json::from_str` via `#[from]` — every schema-level failure
+/// (missing field, invalid enum, bad sha256, zip-slip path) surfaces
+/// here, not as `UpdaterError::Manifest` (which is raised only by
+/// `validate()` for duplicate paths). Without this arm, a corrupt
+/// remote manifest JSON triggers infinite retry at every client
+/// simultaneously.
 fn is_permanent_error(err: &UpdaterError) -> bool {
     matches!(
         err,
@@ -329,6 +337,7 @@ fn is_permanent_error(err: &UpdaterError) -> bool {
             | UpdaterError::InvalidConfig(_)
             | UpdaterError::SelfUpdateSwapFailed(_)
             | UpdaterError::SelfUpdateRespawnFailed(_)
+            | UpdaterError::Json(_)
     )
 }
 
