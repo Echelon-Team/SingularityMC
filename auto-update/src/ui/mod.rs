@@ -123,7 +123,6 @@ impl eframe::App for AutoUpdateApp {
                 // the lowest layer; everything the inner `ui()` renders
                 // lands on top.
                 paint_vertical_gradient(ui, GRADIENT_TOP, GRADIENT_BOTTOM);
-                apply_button_theme(ui);
                 self.ui(ui, frame);
             });
     }
@@ -160,40 +159,59 @@ impl eframe::App for AutoUpdateApp {
         draw_titlebar(ui);
 
         let remaining = ui.available_rect_before_wrap();
-        let buttons_rect = egui::Rect::from_min_size(
-            egui::pos2(remaining.min.x, remaining.max.y - BUTTON_ROW_HEIGHT),
-            egui::vec2(remaining.width(), BUTTON_ROW_HEIGHT),
-        );
         let content_rect = egui::Rect::from_min_max(
             remaining.min,
             egui::pos2(remaining.max.x, remaining.max.y - BUTTON_ROW_HEIGHT),
         );
+        // Centre the buttons by making the scope rect itself only as
+        // wide as the button row needs, positioned at the horizontal
+        // centre of the window. `Layout::left_to_right(Align::Center)`
+        // on its own anchors items to the left of whatever Ui rect it
+        // gets — so the centering has to come from the rect, not the
+        // layout.
+        let buttons_width = estimate_buttons_width(&current_state);
+        let buttons_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                remaining.center().x - buttons_width / 2.0,
+                remaining.max.y - BUTTON_ROW_HEIGHT,
+            ),
+            egui::vec2(buttons_width, BUTTON_ROW_HEIGHT),
+        );
 
-        // Middle — vertically + horizontally centered.
+        // Middle content. egui has no built-in "centre multiple stacked
+        // items vertically" primitive — `centered_and_justified` only
+        // centres a single child and then expands it to fill, which
+        // defeats the purpose for a stack of labels. Compute an
+        // estimated content height from the current state and add
+        // symmetric top padding to nudge the stack into the visual
+        // middle; naturally-stacked items take care of the rest.
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(content_rect)
-                .layout(egui::Layout::centered_and_justified(
-                    egui::Direction::TopDown,
-                )),
+                .layout(egui::Layout::top_down(egui::Align::Center)),
             |ui| {
-                ui.vertical_centered(|ui| {
-                    render_content(ui, &current_state, s, lang);
-                });
+                let est_h = estimate_content_height(&current_state);
+                let pad_top = ((content_rect.height() - est_h) / 2.0).max(0.0);
+                ui.add_space(pad_top);
+                render_content(ui, &current_state, s, lang);
             },
         );
 
-        // Bottom row — horizontally centered, pinned to bottom.
+        // Bottom button row — rect itself is centred horizontally, the
+        // `left_to_right` layout then packs buttons inside it with
+        // normal spacing. `apply_button_theme` MUST run inside this
+        // inner scope: `UiBuilder::new()` starts a fresh child Ui and
+        // the visuals mutation we'd do on the outer `ui` doesn't
+        // propagate — that's why the previous version kept rendering
+        // default-grey buttons even though `apply_button_theme` was
+        // called.
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(buttons_rect)
-                .layout(egui::Layout::centered_and_justified(
-                    egui::Direction::LeftToRight,
-                )),
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
-                ui.horizontal(|ui| {
-                    render_buttons(ui, &current_state, s, &self.on_offline_mode);
-                });
+                apply_button_theme(ui);
+                render_buttons(ui, &current_state, s, &self.on_offline_mode);
             },
         );
 
@@ -299,6 +317,43 @@ fn draw_titlebar(ui: &mut egui::Ui) {
     ui.add_space(TITLEBAR_HEIGHT);
 }
 
+/// Approx height (px) of the content stack per state — used to
+/// compute symmetric top/bottom padding for vertical centring.
+/// Rough estimates: ≈ label line ≈ 20 px + spacing. Over-estimation
+/// just nudges the stack higher; under-estimation nudges it lower.
+/// Either is better than glued-to-the-top.
+fn estimate_content_height(state: &UiState) -> f32 {
+    match state {
+        UiState::Starting => 20.0,
+        UiState::Checking | UiState::Verifying | UiState::Installing => 42.0,
+        UiState::Downloading { .. } => 68.0,
+        UiState::NoInternet { .. }
+        | UiState::OfflineAvailable { .. }
+        | UiState::DownloadFailed { .. } => 46.0,
+        // FatalError: 1 label + spacer + wrapped message — worst case.
+        UiState::FatalError { .. } => 72.0,
+    }
+}
+
+/// Approx width (px) of the button row per state — used to size the
+/// scope rect so it can be positioned horizontally-centred. egui button
+/// widths depend on text + padding; hand-eyed estimates from the PL/EN
+/// labels with a cushion for text size variance.
+fn estimate_buttons_width(state: &UiState) -> f32 {
+    // Wyjdź ≈ 60, Pomoc ≈ 60, TRYB OFFLINE ≈ 115; 4 px spacing.
+    match state {
+        UiState::OfflineAvailable { .. } => 260.0,
+        UiState::DownloadFailed { has_offline: true, .. } => 260.0,
+        UiState::NoInternet { .. }
+        | UiState::FatalError { .. }
+        | UiState::DownloadFailed { has_offline: false, .. } => 140.0,
+        // Work states — buttons row is empty but the estimate is used
+        // to size the (invisible) rect. Any value works; keep it
+        // modest so it doesn't affect nothing.
+        _ => 80.0,
+    }
+}
+
 /// Main content per state. Labels + spinners / progress bars; no
 /// buttons (those live in `render_buttons` in the pinned bottom row).
 fn render_content(
@@ -360,10 +415,12 @@ fn render_content(
     }
 }
 
-/// Bottom button row per state. Horizontally centered by the outer
-/// `Layout::top_down(Align::Center)` wrapper in `ui()`; transient
-/// work states (Checking / Downloading / …) render an empty row so
-/// the layout doesn't reflow on transition into parked states.
+/// Bottom button row per state. Called from an outer scope whose
+/// layout is already `Layout::left_to_right(Align::Center)` and whose
+/// rect is sized + positioned for horizontal centring, so buttons are
+/// added directly to the parent Ui without an extra `ui.horizontal`
+/// wrapper (that would nest another LTR layout and shift spacing).
+/// Work states (Checking / Downloading / …) render nothing.
 fn render_buttons(
     ui: &mut egui::Ui,
     state: &UiState,
@@ -374,24 +431,19 @@ fn render_buttons(
         UiState::OfflineAvailable { .. } => Some(true),
         UiState::DownloadFailed { has_offline, .. } => Some(*has_offline),
         UiState::NoInternet { .. } | UiState::FatalError { .. } => None,
-        // Work states — no buttons, keep the row empty but reserved.
         _ => return,
     };
-    ui.horizontal(|ui| {
-        if ui.button(s.close).clicked() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+    if ui.button(s.close).clicked() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+    if ui.button(s.help).clicked() {
+        let _ = open::that(i18n::DISCORD_URL);
+    }
+    if matches!(offline_button, Some(true)) && ui.button(s.offline_mode).clicked() {
+        if let Some(cb) = on_offline_mode {
+            cb();
         }
-        if ui.button(s.help).clicked() {
-            let _ = open::that(i18n::DISCORD_URL);
-        }
-        if matches!(offline_button, Some(true))
-            && ui.button(s.offline_mode).clicked()
-        {
-            if let Some(cb) = on_offline_mode {
-                cb();
-            }
-        }
-    });
+    }
 }
 
 #[cfg(test)]
