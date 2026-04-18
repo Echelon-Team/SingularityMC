@@ -83,10 +83,36 @@ impl eframe::App for AutoUpdateApp {
         };
         let s = strings(self.lang);
 
+        // Custom titlebar strip — replaces the OS titlebar removed by
+        // `with_decorations(false)` in main.rs. Top 30 px is a drag
+        // region: a drag gesture starts OS-native window drag via
+        // `ViewportCommand::StartDrag`. Centered label doubles as the
+        // app name since there's no OS titlebar to show it.
+        let available = ui.available_rect_before_wrap();
+        let titlebar_height = 30.0;
+        let titlebar_rect = egui::Rect::from_min_size(
+            available.min,
+            egui::vec2(available.width(), titlebar_height),
+        );
+        let drag = ui.interact(
+            titlebar_rect,
+            egui::Id::new("window_drag_region"),
+            egui::Sense::drag(),
+        );
+        if drag.drag_started() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        ui.painter().text(
+            titlebar_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "SingularityMC",
+            egui::FontId::proportional(14.0),
+            ui.style().visuals.text_color(),
+        );
+        ui.add_space(titlebar_height);
+
         ui.vertical_centered(|ui| {
-            ui.add_space(20.0);
-            ui.heading("SingularityMC");
-            ui.add_space(20.0);
+            ui.add_space(12.0);
 
             match &current_state {
                 UiState::Checking => {

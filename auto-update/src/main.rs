@@ -178,10 +178,17 @@ fn main() -> anyhow::Result<()> {
 
     // eframe blocks until the user closes the window. Required to run on
     // the main thread (platform-specific — winit/AppKit/Wayland).
+    // Borderless, non-resizable window per spec 4.x — no OS titlebar /
+    // min-max-close buttons. The window is draggable via the custom
+    // titlebar strip rendered in `ui::mod` (top 30 px emits
+    // `ViewportCommand::StartDrag` on drag_started). Win11 auto-rounds
+    // borderless windows via DwmSetWindowAttribute — no custom painted
+    // rounding needed here.
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([400.0, 220.0])
-            .with_resizable(false),
+            .with_resizable(false)
+            .with_decorations(false),
         ..Default::default()
     };
     eframe::run_native(
