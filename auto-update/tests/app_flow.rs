@@ -658,17 +658,21 @@ async fn download_failed_without_local_hides_offline_flag() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn user_offline_click_preempts_cooldown_tick() {
-    // f7-followup mutation guard: `tokio::select!` has `biased;` with
-    // `user_rx.recv()` first, so a user click that arrives while the
-    // cooldown sleep is still running MUST win the race immediately
-    // (not on the next tick). Uses `retry_interval_secs = 1` so the
-    // sleep arm is actually blocking — with the zero-delay config the
-    // sleep completes instantly and `biased` has nothing to prove.
+    // Dispatcher-reachability guard: a user Offline click that lands
+    // while the state machine is parked in NoInternet's cooldown MUST
+    // reach `dispatch_user_action_with_local` and terminate with
+    // `UserRequestedOffline` — not get dropped on the floor.
     //
-    // Mutation: flipping the arms (sleep first, recv second) or
-    // removing `biased;` turns the race random; over many runs the
-    // flow might still pass, but the 1-s sleep latency would show
-    // up intermittently and flake the 2-s deadline below.
+    // NOTE: an earlier revision of this comment claimed the test catches
+    // `biased;` removal. That's empirically false — removing `biased;`
+    // still passes 8/8 runs. When the click lands before `select!`
+    // polls, `user_rx.recv()` is immediately ready and `sleep(1s)` is
+    // not, so the ready-arm wins regardless of polling bias. A genuine
+    // biased-select mutation test needs `tokio::time::pause() + advance`
+    // to simulate both arms ready in the same poll — separate task.
+    // What this test DOES catch: the dispatcher going missing entirely
+    // (e.g. the `user_rx.recv()` arm body mutated to a no-op), plus the
+    // 2-s deadline catches a replace-select-with-pure-sleep regression.
     let install_dir = tempfile::tempdir().unwrap();
     seed_local_manifest(install_dir.path(), "launcher/old-app.jar");
 

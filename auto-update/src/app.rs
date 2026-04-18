@@ -327,18 +327,32 @@ pub async fn run_update_flow_with_config(
 /// `validate()` for duplicate paths). Without this arm, a corrupt
 /// remote manifest JSON triggers infinite retry at every client
 /// simultaneously.
+///
+/// `Io` is permanent ONLY for `PermissionDenied` / `ReadOnlyFilesystem`
+/// — read-only install dir (Program Files without admin, NTFS read-only
+/// attribute, EROFS) can't be fixed by waiting 8-30 s and retrying.
+/// Other Io kinds stay transient: the downloader synthesises
+/// `UnexpectedEof` for truncated Content-Length (next fetch usually
+/// completes), and `Interrupted` shows up when an AV scanner briefly
+/// locks a write. Exhaustive `match` (not `matches!`) so any future
+/// `UpdaterError` variant must be classified to compile.
 fn is_permanent_error(err: &UpdaterError) -> bool {
-    matches!(
-        err,
+    match err {
         UpdaterError::Manifest(_)
-            | UpdaterError::HashMismatch { .. }
-            | UpdaterError::Permission(_)
-            | UpdaterError::SwapFailed { .. }
-            | UpdaterError::InvalidConfig(_)
-            | UpdaterError::SelfUpdateSwapFailed(_)
-            | UpdaterError::SelfUpdateRespawnFailed(_)
-            | UpdaterError::Json(_)
-    )
+        | UpdaterError::HashMismatch { .. }
+        | UpdaterError::Permission(_)
+        | UpdaterError::SwapFailed { .. }
+        | UpdaterError::InvalidConfig(_)
+        | UpdaterError::SelfUpdateSwapFailed(_)
+        | UpdaterError::SelfUpdateRespawnFailed(_)
+        | UpdaterError::Json(_) => true,
+        UpdaterError::Io(e) => matches!(
+            e.kind(),
+            std::io::ErrorKind::PermissionDenied
+                | std::io::ErrorKind::ReadOnlyFilesystem
+        ),
+        UpdaterError::Network(_) | UpdaterError::NotFound(_) => false,
+    }
 }
 
 async fn handle_api_failure(
