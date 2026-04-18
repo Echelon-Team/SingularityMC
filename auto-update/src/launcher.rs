@@ -137,6 +137,14 @@ pub fn state_path(install_dir: &Path) -> PathBuf {
 /// module-level "Threshold semantics" note.
 pub const LAUNCHER_CRASH_THRESHOLD: u32 = 2;
 
+/// Self-update sibling of [`LAUNCHER_CRASH_THRESHOLD`]. When the
+/// auto-update binary itself fails to reach bootstrap-complete 2 times
+/// in a row (the `self-update-alive-flag` handshake below), the 3rd
+/// boot performs [`crate::self_update::perform_self_update_rollback`]
+/// — swapping `.bak` back over the current (broken) exe. Same magnitude
+/// as launcher threshold per Mateusz's "po 2 crashach rollback" rule.
+pub const SELF_UPDATE_CRASH_THRESHOLD: u32 = 2;
+
 /// Path of the "launcher-alive" sentinel in `install_dir`.
 ///
 /// The launcher writes this file (via `LauncherAliveFlag.kt` on the
@@ -164,12 +172,55 @@ pub fn launcher_alive_flag_path(install_dir: &Path) -> PathBuf {
 /// positive rollback).
 #[must_use]
 pub fn consume_launcher_alive_flag(install_dir: &Path) -> bool {
-    let path = launcher_alive_flag_path(install_dir);
+    consume_flag(&launcher_alive_flag_path(install_dir))
+}
+
+/// Path of the "self-update-alive" sentinel in `install_dir`.
+///
+/// Parallel to [`launcher_alive_flag_path`] but for the auto-update
+/// binary itself, not the spawned launcher. Auto-update writes this
+/// flag near the end of its bootstrap (`main.rs` after cleanup, before
+/// config load) to signal "this build's binary reaches running Rust
+/// code". Next boot checks the flag: absent → assume previous instance
+/// crashed during bootstrap (broken self-update swap) and increment
+/// `self_update_crash_counter`. Present → reset counter.
+#[must_use]
+pub fn self_update_alive_flag_path(install_dir: &Path) -> PathBuf {
+    install_dir.join("self-update-alive-flag")
+}
+
+/// Consume + delete the self-update alive flag. Symmetric with
+/// [`consume_launcher_alive_flag`]; see that function for the "safer to
+/// skip an increment than spuriously increment" rationale on the swallow
+/// of deletion errors.
+#[must_use]
+pub fn consume_self_update_alive_flag(install_dir: &Path) -> bool {
+    consume_flag(&self_update_alive_flag_path(install_dir))
+}
+
+/// Write the self-update alive flag (empty content — only existence
+/// matters). Called from `main.rs` after bootstrap steps complete but
+/// before the rest of the update flow kicks off, so crashes AFTER this
+/// write are attributed to the flow (not self-update), and crashes
+/// BEFORE this write count as broken-binary self-update failures.
+pub fn write_self_update_alive_flag(install_dir: &Path) -> Result<()> {
+    let path = self_update_alive_flag_path(install_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(UpdaterError::Io)?;
+    }
+    util::atomic_write_bytes(&path, b"")
+}
+
+/// Shared flag-consume implementation. Extracted so the launcher and
+/// self-update alive flags share identical delete-on-read semantics —
+/// both need to start the next boot from a clean slate regardless of
+/// whether the flag was present or not.
+fn consume_flag(path: &Path) -> bool {
     let existed = path.exists();
     if existed {
-        if let Err(e) = std::fs::remove_file(&path) {
+        if let Err(e) = std::fs::remove_file(path) {
             log::warn!(
-                "failed to consume launcher-alive-flag at {}: {e} \
+                "failed to consume alive flag at {}: {e} \
                  (benign — next run will treat it as stable anyway)",
                 path.display()
             );
@@ -381,6 +432,56 @@ mod tests {
         // skopiowaniem plików". Pinned so any future tuning is an explicit
         // review change, not silent drift.
         assert_eq!(LAUNCHER_CRASH_THRESHOLD, 2);
+    }
+
+    // --- self-update-alive-flag handshake ---
+
+    #[test]
+    fn self_update_alive_flag_path_is_distinct_from_launcher_flag() {
+        let dir = TempDir::new().unwrap();
+        let su = self_update_alive_flag_path(dir.path());
+        let la = launcher_alive_flag_path(dir.path());
+        assert_ne!(
+            su, la,
+            "self-update and launcher alive flags MUST have distinct file names \
+             — otherwise the two crash counters would interfere"
+        );
+        assert_eq!(su.file_name().unwrap(), "self-update-alive-flag");
+    }
+
+    #[test]
+    fn consume_self_update_alive_flag_absent_returns_false() {
+        let dir = TempDir::new().unwrap();
+        assert!(!consume_self_update_alive_flag(dir.path()));
+    }
+
+    #[test]
+    fn write_then_consume_self_update_alive_flag_round_trip() {
+        let dir = TempDir::new().unwrap();
+        write_self_update_alive_flag(dir.path()).unwrap();
+        assert!(self_update_alive_flag_path(dir.path()).exists());
+        assert!(consume_self_update_alive_flag(dir.path()));
+        assert!(!self_update_alive_flag_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn write_self_update_alive_flag_is_idempotent() {
+        // Overwrite semantic — calling twice must succeed, file still
+        // exists, consume still reads it once.
+        let dir = TempDir::new().unwrap();
+        write_self_update_alive_flag(dir.path()).unwrap();
+        write_self_update_alive_flag(dir.path()).unwrap();
+        assert!(self_update_alive_flag_path(dir.path()).exists());
+        assert!(consume_self_update_alive_flag(dir.path()));
+    }
+
+    #[test]
+    fn self_update_crash_threshold_matches_launcher_threshold() {
+        // Both counters use identical threshold per Mateusz "po 2 crashach"
+        // rule. Pinned as a paired invariant — changing one without the
+        // other would leave the two recovery paths tuned asymmetrically.
+        assert_eq!(SELF_UPDATE_CRASH_THRESHOLD, 2);
+        assert_eq!(SELF_UPDATE_CRASH_THRESHOLD, LAUNCHER_CRASH_THRESHOLD);
     }
 
     // --- CrashCounterKind + state accessor methods ---

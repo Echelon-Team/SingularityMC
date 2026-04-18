@@ -38,7 +38,9 @@ use singularitymc_auto_update::app::{
     current_os_target, run_update_flow_with_config, FlowOutcome, RunUpdateFlowConfig, UserAction,
 };
 use singularitymc_auto_update::i18n::{resolve_lang, strings};
-use singularitymc_auto_update::launcher::{CrashCounterKind, LAUNCHER_CRASH_THRESHOLD};
+use singularitymc_auto_update::launcher::{
+    CrashCounterKind, LAUNCHER_CRASH_THRESHOLD, SELF_UPDATE_CRASH_THRESHOLD,
+};
 use singularitymc_auto_update::ui::{states::UiState, AutoUpdateApp};
 use singularitymc_auto_update::{config, launcher, manifest, self_update, updater};
 use std::path::PathBuf;
@@ -80,8 +82,31 @@ fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("cannot determine install_dir from current_exe"))?
         .to_path_buf();
 
-    // Pending self-update swap must happen before ANY other state reads —
-    // the new binary may have different schema expectations.
+    // Self-update crash detection runs FIRST — before anything that can
+    // crash (config load, runtime build, eframe init). Sequence:
+    //
+    //   1. Consume self-update alive flag. Present → reset
+    //      `self_update_crash_counter`; absent → increment.
+    //   2. If counter hit `SELF_UPDATE_CRASH_THRESHOLD` → call
+    //      `self_update::perform_self_update_rollback` which swaps the
+    //      `.bak` reserve back over the (broken) current exe and
+    //      respawns. This process exits so the broken image is released.
+    //   3. Write fresh alive flag BEFORE bootstrap can crash. If we
+    //      make it past this point, next boot will treat the current
+    //      binary as known-good.
+    //
+    // `apply_pending` goes AFTER the crash check so a freshly-swapped
+    // broken binary has a chance to detect itself crashed and roll
+    // back via `.bak` on its own next boot, instead of getting stuck
+    // re-applying the same broken `.new`.
+    if handle_self_update_crash_counter(&install_dir)? {
+        // Rollback was invoked + new process spawned; exit so the
+        // broken image can be released.
+        return Ok(());
+    }
+
+    // Pending self-update swap must happen before ANY update-flow state
+    // reads — the new binary may have different schema expectations.
     if self_update::apply_pending()? {
         // Swap committed + fresh process spawned; exit promptly so the
         // replaced image can be released by the OS.
@@ -89,6 +114,15 @@ fn main() -> anyhow::Result<()> {
     }
 
     self_update::cleanup_stale_files(&install_dir);
+
+    // Bootstrap successful up to this point — alive flag written so the
+    // next boot knows this binary at least reaches this line without
+    // crashing. Failure to write the flag is non-fatal (means next boot
+    // will mis-count as crash, but the counter has to hit threshold 2
+    // before rollback — one spurious increment is recoverable).
+    if let Err(e) = launcher::write_self_update_alive_flag(&install_dir) {
+        log::warn!("failed to write self-update alive flag: {e}");
+    }
 
     // Launcher crash-loop detector + self-healing rollback. Runs BEFORE
     // any update flow work so a broken previous update gets reverted
@@ -373,6 +407,67 @@ fn apply_win11_rounded_corners(cc: &eframe::CreationContext<'_>) {
 /// Non-Windows stub — the rounded-corner path is Win11-specific.
 #[cfg(not(windows))]
 fn apply_win11_rounded_corners(_cc: &eframe::CreationContext<'_>) {}
+
+/// Consume the `self-update-alive-flag`, update the SelfUpdate crash
+/// counter, and trigger `.bak` rollback when the counter hits
+/// threshold. Returns `Ok(true)` if rollback was invoked (caller exits
+/// so the broken image releases), `Ok(false)` if rollback was not
+/// needed or could not be performed (e.g. no `.bak` reserve exists —
+/// user reinstall is the remaining recovery path).
+///
+/// Counter R/W errors are surfaced as `Err` because unlike the launcher
+/// counter path (where missed counts just delay detection by one boot),
+/// a silent-failure here would let a known-broken binary keep booting
+/// without ever tripping the rollback — and self-update rollback is the
+/// ONLY recovery without user reinstall.
+fn handle_self_update_crash_counter(install_dir: &PathBuf) -> anyhow::Result<bool> {
+    let alive = launcher::consume_self_update_alive_flag(install_dir);
+    if alive {
+        launcher::reset_crash_counter(install_dir, CrashCounterKind::SelfUpdate)
+            .map_err(|e| anyhow::anyhow!("reset self-update crash counter failed: {e}"))?;
+        log::info!("previous auto-update boot reached stable bootstrap (self-update alive flag consumed)");
+        return Ok(false);
+    }
+
+    let count = launcher::increment_crash_counter(install_dir, CrashCounterKind::SelfUpdate)
+        .map_err(|e| anyhow::anyhow!("increment self-update crash counter failed: {e}"))?;
+    log::info!(
+        "self-update alive flag absent; self_update_crash_counter now {count} \
+         (threshold {SELF_UPDATE_CRASH_THRESHOLD})"
+    );
+
+    if count < SELF_UPDATE_CRASH_THRESHOLD {
+        return Ok(false);
+    }
+
+    log::warn!(
+        "self-update crash counter {count} >= threshold {SELF_UPDATE_CRASH_THRESHOLD}; \
+         attempting rollback from .bak reserve"
+    );
+    match self_update::perform_self_update_rollback() {
+        Ok(true) => {
+            // Rollback swap committed + new process spawned. Reset
+            // counter so the restored binary's first boot starts clean.
+            if let Err(e) =
+                launcher::reset_crash_counter(install_dir, CrashCounterKind::SelfUpdate)
+            {
+                log::warn!("reset self-update crash counter after rollback failed: {e}");
+            }
+            Ok(true)
+        }
+        Ok(false) => {
+            log::error!(
+                "self-update rollback requested but no .bak reserve found; \
+                 user must reinstall the auto-update binary manually"
+            );
+            Ok(false)
+        }
+        Err(e) => {
+            log::error!("self-update rollback failed: {e}");
+            Ok(false)
+        }
+    }
+}
 
 /// Consume the `launcher-alive-flag`, update the Launcher crash counter
 /// accordingly, and trigger a File-Backups rollback when the counter
