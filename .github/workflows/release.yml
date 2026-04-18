@@ -1,0 +1,124 @@
+name: Release Build
+
+# Dwa formaty tagów uruchamiają ten workflow:
+#   v1.2.3      — stabilny release
+#   v1.2.3-rc.1 — prerelease (oznaczane `IS_PRERELEASE=true` poniżej,
+#                 docelowo GitHub Release dostaje prerelease: true)
+#
+# ci.yml (osobny workflow) nadal obsługuje push/PR builds bez tagów —
+# to wire włącza się tylko dla release flow.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-*.*'
+
+permissions:
+  # Potrzebne dla actions/create-release (Task 3.3). Na razie workflow
+  # tylko buduje artifacty — ale zostawiamy żeby włączenie release
+  # step nie wymagało drugiego PR na uprawnieniach.
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            os_suffix: windows
+            exe_ext: .exe
+          - os: ubuntu-latest
+            os_suffix: linux
+            exe_ext: ''
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # fetch-depth 0 — build.rs w auto-update używa `git describe` żeby
+          # osadzić wersję w binarce. Shallow clone = "No names found".
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          if [[ "$TAG" == *"-"* ]]; then
+            echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+          else
+            echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+          fi
+
+      # JDK 17 (NIE 21 jak ci.yml) — jpackage bundled JRE z 17 jest
+      # mniejszy + stabilniejszy zgodnie z decyzją w build.gradle.kts.
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          # Key per-OS żeby Windows Temurin 17 nie zjadł Linux Temurin
+          # 17 cache. hashFiles matches wszystkie gradle build scripts +
+          # version catalog.
+          key: gradle-${{ matrix.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml') }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            auto-update/target
+          key: cargo-${{ matrix.os }}-${{ hashFiles('auto-update/Cargo.toml', 'auto-update/Cargo.lock') }}
+
+      # Compose Desktop `createDistributable` produkuje unpacked app
+      # directory w build/compose/binaries/main/app/<AppName>/ —
+      # zawiera runtime/ (JRE) + lib/ + SingularityMC executable.
+      # Inno Setup (Windows) + AppImage (Linux) w Phase 4 będzie to
+      # pakować do installera.
+      - name: Build launcher (createDistributable)
+        shell: bash
+        run: ./gradlew :singularity-launcher:createDistributable
+
+      - name: Build auto-update (release)
+        working-directory: auto-update
+        run: cargo build --release
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.os_suffix }}
+          # Dwa paths:
+          # 1. Cały jpackage output (launcher/ app dir).
+          # 2. Skompilowana auto-update binarka.
+          path: |
+            singularity-launcher/build/compose/binaries/main/app/**
+            auto-update/target/release/singularitymc-auto-update${{ matrix.exe_ext }}
+          retention-days: 30
+
+  # Osobny job — pobiera artifacts z matrix jobs i zostawia je do
+  # inspekcji. Task 3.3 rozszerzy to o: generate-manifest per OS →
+  # Inno Setup / AppImage pack → upload do GitHub Release.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      - name: List artifacts (debug)
+        run: find artifacts/ -type f | sort
