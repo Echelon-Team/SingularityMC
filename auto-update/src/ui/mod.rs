@@ -91,19 +91,26 @@ const BUTTON_ROW_HEIGHT: f32 = 44.0;
 const BG_COLOR: egui::Color32 = egui::Color32::from_rgb(0x14, 0x12, 0x1D);
 
 impl eframe::App for AutoUpdateApp {
-    /// Transparent clear so the rounded corners of the painted
-    /// `CentralPanel` frame fall outside the filled area and the OS
-    /// composites them away. Without `with_transparent(true)` +
-    /// this override, corners would render as solid clear-color and
-    /// the "rounded" effect would be invisible.
+    /// Solid End Dimension clear — avoids the transparency dance that
+    /// wgpu's `CompositeAlphaMode` can't honour on some GPU stacks
+    /// (NVIDIA + Overwolf Vulkan hooks, etc.). Matches the painted
+    /// `CentralPanel` fill so the window reads as one flat surface.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
+        const fn srgb(b: u8) -> f32 {
+            b as f32 / 255.0
+        }
+        [srgb(0x14), srgb(0x12), srgb(0x1D), 1.0]
     }
 
     /// Override `update` instead of just implementing `ui` so we can
     /// install a custom `CentralPanel` frame — corner rounding + End
     /// Dimension fill. The default `update` wraps `ui` in a plain
     /// CentralPanel with no rounding and the standard visuals fill.
+    /// Rounded corners stay in the Frame even without a transparent
+    /// window — they're invisible against a matching `clear_color` but
+    /// remain "free" for a follow-up that wires the Win11 native
+    /// rounding API (DwmSetWindowAttribute) or restores transparency
+    /// once a cross-driver surface config is known.
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let panel_frame = egui::Frame::default()
             .fill(BG_COLOR)

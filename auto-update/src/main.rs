@@ -181,17 +181,20 @@ fn main() -> anyhow::Result<()> {
     // Borderless, non-resizable window per spec 4.x — no OS titlebar /
     // min-max-close buttons. Draggable via the custom titlebar strip
     // rendered in `ui::mod` (top 30 px emits `ViewportCommand::StartDrag`
-    // on drag_started). `with_transparent(true)` plus `clear_color =
-    // [0,0,0,0]` in the `App` impl makes the window "shape" follow
-    // whatever we paint: rounded corners fall outside the painted
-    // `CentralPanel::frame`, so the OS composites them as transparent
-    // pixels rather than showing a square window with visible corners.
+    // on drag_started).
+    //
+    // NOTE: no `with_transparent(true)` — wgpu `CompositeAlphaMode` is
+    // unreliable across GPU drivers (NVIDIA + Overwolf Vulkan loader
+    // hooks report no alpha support in practice). Requesting transparency
+    // when the surface can't honour it leaves the painted rounded-corner
+    // cut-outs rendering as opaque clear-color instead. Proper rounded
+    // corners on Win11 need a native DwmSetWindowAttribute call — future
+    // polish task.
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([400.0, 220.0])
             .with_resizable(false)
-            .with_decorations(false)
-            .with_transparent(true),
+            .with_decorations(false),
         ..Default::default()
     };
     eframe::run_native(
