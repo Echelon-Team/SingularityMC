@@ -59,7 +59,7 @@ compose.desktop {
                 dirChooser = true
                 perUserInstall = true
                 upgradeUuid = "18159995-d967-4cd2-8885-77bfa97cfa9f"
-                // iconFile.set(project.file("src/main/resources/icon.ico"))
+                iconFile.set(rootProject.file("installer/icon.ico"))
             }
 
             linux {
@@ -68,7 +68,7 @@ compose.desktop {
                 debMaintainer = "team@singularitymc.example"
                 menuGroup = "Games"
                 appCategory = "Game"
-                // iconFile.set(project.file("src/main/resources/icon.png"))
+                iconFile.set(rootProject.file("installer/singularitymc.png"))
             }
 
             macOS {

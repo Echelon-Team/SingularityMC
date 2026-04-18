@@ -37,17 +37,22 @@ egui = "0.34"
 #
 # reqwest 0.13+ forces aws-lc-rs as the rustls backend (no public opt-out to
 # the ring backend), and aws-lc-rs requires CMake + NASM at build time on
-# Windows — a blocker on clean dev machines. 0.12 still uses rustls + ring,
-# so `rustls-tls-native-roots` gives us:
-#   - ring backend (no CMake/NASM build deps),
-#   - reads Windows' installed certificate store (corporate proxies with
-#     custom CAs keep working),
-#   - no system OpenSSL dependency.
-# Revisit when reqwest adds a public ring feature flag on 0.13+.
+# Windows — a blocker on clean dev machines. 0.12 still uses rustls + ring.
+#
+# Roots: `rustls-tls-webpki-roots` (Mozilla CA bundle, wkompilowany w binarkę).
+# Przerzuciliśmy z `rustls-tls-native-roots` w v0.1.2 bo u userów launcher
+# wywalał "error sending request for url (api.github.com/...)" mimo że
+# system miał działający internet (`curl 200 OK` potwierdzał). Root cause:
+# rustls-native-certs na Windows czyta z Windows Certificate Store, a na
+# niektórych instalacjach (stare Win10 bez DigiCert root update, antywirus
+# z HTTPS inspection, corporate MitM) TLS handshake z api.github.com
+# failuje. webpki-roots eliminuje tę zmienność — zawsze ta sama Mozilla CA
+# lista. Trade-off: korporat MitM proxy z custom CA nie będzie zaufany.
+# Dla graczy SingularityMC to akceptowalne.
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "stream",
-    "rustls-tls-native-roots",
+    "rustls-tls-webpki-roots",
     "charset",
     "http2",
 ] }

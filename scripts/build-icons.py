@@ -55,7 +55,7 @@ APPIMAGE_SIZE = 256
 # kanwy. Logo.png ma ~15% białego marginesu wokół rysunku, więc bez
 # kadrowania logo zajmuje tylko ~70% W/H gotowej ikony i wizualnie wygląda
 # za małe w Explorerze. Windows icon design guidelines: ~5-8% safe area.
-ICON_PADDING = 0.04
+ICON_PADDING = 0.02
 
 
 def whitewash_to_alpha(img: Image.Image) -> Image.Image:
@@ -121,16 +121,16 @@ def main() -> None:
     png.save(DST_PNG, format="PNG")
     print(f"wrote: {DST_PNG} {APPIMAGE_SIZE}x{APPIMAGE_SIZE}")
 
-    # Per-size fit — downsampling cropped logo daje ostrzejszy result niż
-    # jedno PIL multi-size save z niekadrowanego źródła (które też zachowuje
-    # biały margines w każdym rozmiarze).
-    frames = [fit_to_square(alpha_full, s, ICON_PADDING) for s in ICO_SIZES]
-    frames[0].save(
-        DST_ICO,
-        format="ICO",
-        sizes=[(s, s) for s in ICO_SIZES],
-        append_images=frames[1:],
+    # Per-size fit — każdy frame pre-resized do docelowego rozmiaru daje
+    # ostrzejszy result niż jedno PIL multi-size save (które downsampluje
+    # z jednego źródła każdą wielkość). Sortujemy malejąco bo PIL ICO
+    # encoder zapisuje frame[0] jako "główny" — duży rozmiar jako główny
+    # zwiększa kompatybilność z Explorer large-icon view.
+    frames = sorted(
+        (fit_to_square(alpha_full, s, ICON_PADDING) for s in ICO_SIZES),
+        key=lambda im: -im.size[0],
     )
+    frames[0].save(DST_ICO, format="ICO", append_images=frames[1:])
     print(f"wrote: {DST_ICO} sizes={ICO_SIZES}")
 
 
