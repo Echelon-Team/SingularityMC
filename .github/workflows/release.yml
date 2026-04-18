@@ -3,10 +3,9 @@ name: Release Build
 # Dwa formaty tagów uruchamiają ten workflow:
 #   v1.2.3      — stabilny release
 #   v1.2.3-rc.1 — prerelease (oznaczane `IS_PRERELEASE=true` poniżej,
-#                 docelowo GitHub Release dostaje prerelease: true)
+#                 GitHub Release dostaje prerelease: true)
 #
-# ci.yml (osobny workflow) nadal obsługuje push/PR builds bez tagów —
-# to wire włącza się tylko dla release flow.
+# ci.yml (osobny workflow) nadal obsługuje push/PR builds bez tagów.
 on:
   push:
     tags:
@@ -14,10 +13,13 @@ on:
       - 'v*.*.*-*.*'
 
 permissions:
-  # Potrzebne dla actions/create-release (Task 3.3). Na razie workflow
-  # tylko buduje artifacty — ale zostawiamy żeby włączenie release
-  # step nie wymagało drugiego PR na uprawnieniach.
-  contents: write
+  contents: write # softprops/action-gh-release musi móc tworzyć Release
+
+env:
+  # Kotlin CLI version for `scripts/generate-manifest.main.kts`. Bump
+  # tylko gdy zmieniasz target language features w script — inaczej
+  # pinowane stałe dla reprodukcyjności CI.
+  KOTLIN_VERSION: "2.0.21"
 
 jobs:
   build:
@@ -28,16 +30,18 @@ jobs:
           - os: windows-latest
             os_suffix: windows
             exe_ext: .exe
+            auto_update_bin: singularitymc-auto-update.exe
           - os: ubuntu-latest
             os_suffix: linux
             exe_ext: ''
+            auto_update_bin: singularitymc-auto-update
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          # fetch-depth 0 — build.rs w auto-update używa `git describe` żeby
-          # osadzić wersję w binarce. Shallow clone = "No names found".
+          # fetch-depth 0 — build.rs w auto-update używa `git describe`
+          # żeby osadzić wersję w binarce. Shallow clone = "No names found".
           fetch-depth: 0
 
       - name: Extract version from tag
@@ -64,15 +68,51 @@ jobs:
       - name: Setup Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
+      # Kotlin CLI — manual install z JetBrains release zip. Unified
+      # dla Win + Linux (GHA Windows runner ma bash + unzip via Git
+      # Bash). Cache'owane żeby nie pobierać za każdym runem.
+      - name: Cache Kotlin CLI
+        id: kotlin-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/kotlin-${{ env.KOTLIN_VERSION }}
+          key: kotlin-${{ runner.os }}-${{ env.KOTLIN_VERSION }}
+
+      - name: Install Kotlin CLI
+        if: steps.kotlin-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TOOL_CACHE/kotlin-$KOTLIN_VERSION"
+          cd "$RUNNER_TOOL_CACHE/kotlin-$KOTLIN_VERSION"
+          curl -sL "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" -o kotlin.zip
+          unzip -q kotlin.zip
+
+      - name: Add Kotlin to PATH
+        shell: bash
+        run: echo "$RUNNER_TOOL_CACHE/kotlin-$KOTLIN_VERSION/kotlinc/bin" >> "$GITHUB_PATH"
+
+      # Installer tooling per OS.
+      - name: Install Inno Setup (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install AppImage tools (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /usr/local/bin/appimagetool
+          chmod +x /usr/local/bin/appimagetool
+
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          # Key per-OS żeby Windows Temurin 17 nie zjadł Linux Temurin
-          # 17 cache. hashFiles matches wszystkie gradle build scripts +
-          # version catalog.
           key: gradle-${{ matrix.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/libs.versions.toml') }}
 
       - name: Cache Cargo
@@ -84,11 +124,6 @@ jobs:
             auto-update/target
           key: cargo-${{ matrix.os }}-${{ hashFiles('auto-update/Cargo.toml', 'auto-update/Cargo.lock') }}
 
-      # Compose Desktop `createDistributable` produkuje unpacked app
-      # directory w build/compose/binaries/main/app/<AppName>/ —
-      # zawiera runtime/ (JRE) + lib/ + SingularityMC executable.
-      # Inno Setup (Windows) + AppImage (Linux) w Phase 4 będzie to
-      # pakować do installera.
       - name: Build launcher (createDistributable)
         shell: bash
         run: ./gradlew :singularity-launcher:createDistributable
@@ -97,28 +132,87 @@ jobs:
         working-directory: auto-update
         run: cargo build --release
 
+      - name: Generate manifest
+        shell: bash
+        run: |
+          kotlin scripts/generate-manifest.main.kts \
+              singularity-launcher/build/compose/binaries/main/app/SingularityMC \
+              ${{ matrix.os_suffix }} \
+              ${{ env.VERSION }} \
+              manifest-${{ matrix.os_suffix }}.json
+
+      - name: Build Windows installer
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: iscc installer/singularitymc.iss //DVERSION=${{ env.VERSION }}
+
+      - name: Build Linux AppImage
+        if: matrix.os == 'ubuntu-latest'
+        run: bash scripts/build-appimage.sh ${{ env.VERSION }}
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.os_suffix }}
-          # Dwa paths:
-          # 1. Cały jpackage output (launcher/ app dir).
-          # 2. Skompilowana auto-update binarka.
           path: |
-            singularity-launcher/build/compose/binaries/main/app/**
-            auto-update/target/release/singularitymc-auto-update${{ matrix.exe_ext }}
+            installer/SingularityMC-Setup-*.exe
+            installer/SingularityMC-*.AppImage
+            manifest-${{ matrix.os_suffix }}.json
+            auto-update/target/release/${{ matrix.auto_update_bin }}
+            singularity-launcher/build/compose/binaries/main/app/SingularityMC/**
           retention-days: 30
 
-  # Osobny job — pobiera artifacts z matrix jobs i zostawia je do
-  # inspekcji. Task 3.3 rozszerzy to o: generate-manifest per OS →
-  # Inno Setup / AppImage pack → upload do GitHub Release.
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Extract version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "VERSION=${TAG#v}" >> $GITHUB_ENV
+          if [[ "$TAG" == *"-"* ]]; then
+            echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+          else
+            echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+          fi
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts/
-      - name: List artifacts (debug)
-        run: find artifacts/ -type f | sort
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          mkdir -p release/
+          # Installer per OS (raw exe / AppImage).
+          cp artifacts/build-windows/installer/SingularityMC-Setup-*.exe release/ || true
+          cp artifacts/build-linux/installer/SingularityMC-*.AppImage release/ || true
+          # Per-OS manifests.
+          cp artifacts/build-windows/manifest-windows.json release/
+          cp artifacts/build-linux/manifest-linux.json release/
+          # Auto-update binaries per OS (re-named z `singularitymc-` prefix usuniętym,
+          # dopisanym OS suffix żeby user nie pobierał złej arch).
+          cp artifacts/build-windows/auto-update/target/release/singularitymc-auto-update.exe release/auto-update-windows.exe
+          cp artifacts/build-linux/auto-update/target/release/singularitymc-auto-update release/auto-update-linux
+          # Per-file launcher assets — OS-prefix dla specific, shared bez prefix.
+          chmod +x scripts/copy-release-files.sh
+          bash scripts/copy-release-files.sh artifacts/build-windows/singularity-launcher/build/compose/binaries/main/app/SingularityMC release/ win
+          bash scripts/copy-release-files.sh artifacts/build-linux/singularity-launcher/build/compose/binaries/main/app/SingularityMC release/ linux
+          echo "--- Release assets ---"
+          ls -lah release/ | head -40
+          echo "--- Total ---"
+          du -sh release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          prerelease: ${{ env.IS_PRERELEASE }}
+          # Tag name automatycznie z GITHUB_REF, name (tytuł release)
+          # taki sam. Release body pozostaje puste — Mateusz dopisuje
+          # changelog post-tworzeniu (lub automatyzacja w przyszłej
+          # iteracji via `generate_release_notes: true`).
