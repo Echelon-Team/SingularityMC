@@ -196,24 +196,24 @@ impl eframe::App for AutoUpdateApp {
             },
         );
 
-        // Bottom button row — full-width rect, `top_down(Center)` on
-        // the outer scope cross-centres its single child (the
-        // `ui.horizontal` inside), and `ui.horizontal` lays out the
-        // individual buttons left-to-right at their natural widths.
-        // Net effect: a perfectly-centred row regardless of how many
-        // buttons or how long their labels are, without a width
-        // estimate. `apply_button_theme` MUST run inside this inner
-        // scope: `UiBuilder::new()` starts a fresh child Ui that
+        // Bottom button row — full-width rect, LTR layout with BOTH
+        // axes centred. `with_main_align(Align::Center)` centres items
+        // along the main (horizontal) axis — this is the piece the
+        // previous two attempts were missing: `Align::Center` in the
+        // `Layout::left_to_right(...)` constructor only sets the cross
+        // axis (vertical). `apply_button_theme` MUST run inside this
+        // inner scope: `UiBuilder::new()` starts a fresh child Ui that
         // doesn't inherit visuals mutations from the parent Ui.
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(buttons_rect)
-                .layout(egui::Layout::top_down(egui::Align::Center)),
+                .layout(
+                    egui::Layout::left_to_right(egui::Align::Center)
+                        .with_main_align(egui::Align::Center),
+                ),
             |ui| {
                 apply_button_theme(ui);
-                ui.horizontal(|ui| {
-                    render_buttons(ui, &current_state, s, &self.on_offline_mode);
-                });
+                render_buttons(ui, &current_state, s, &self.on_offline_mode);
             },
         );
 
