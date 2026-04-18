@@ -37,9 +37,11 @@ chmod +x "$APPDIR/AppRun"
 # .desktop — metadata dla FreeDesktop-compatible launchers.
 cp installer/singularitymc.desktop "$APPDIR/singularitymc.desktop"
 
-# Icon placeholder — real PNG icon wdrozymy w Phase 4 follow-up.
-# appimagetool wymaga .png/.svg obok .desktop żeby nie warn.
-touch "$APPDIR/singularitymc.png"
+# Icon: pre-built przez `scripts/build-icons.py` z launcher Logo
+# (biały background → alpha). 256x256 PNG RGBA. AppImage + .desktop
+# konsumują `Icon=singularitymc` → GNOME/KDE menu widzi właściwą
+# ikonę zamiast default broken-image placeholder.
+cp installer/singularitymc.png "$APPDIR/singularitymc.png"
 
 # Default config bundled into AppImage. User nadpisuje przy
 # pierwszym uruchomieniu via auto-update config dialog.

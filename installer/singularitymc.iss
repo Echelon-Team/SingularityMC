@@ -50,7 +50,14 @@ OutputBaseFilename=SingularityMC-Setup-{#VERSION}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\{#MyAppExeName}
+; Ikona wizard-a (installer welcome screen + taskbar podczas install).
+; Bez tego Inno Setup używa swojej default ikony — obco.
+SetupIconFile=icon.ico
+; Ikona w Add/Remove Programs. Wcześniej wskazywała na auto-update.exe
+; który ma embedded icon (winres w build.rs), ale dedykowane icon.ico
+; daje lepszą pewność że kontrol panel widzi ładną ikonę niezależnie
+; od tego czy Rust binary embed się udał.
+UninstallDisplayIcon={app}\icon.ico
 AllowNoIcons=yes
 
 [Languages]
@@ -67,14 +74,21 @@ Name: "autostart"; Description: "Uruchamiaj przy starcie Windows"; GroupDescript
 ; `DestName: auto-update.exe` — przemianowanie z `singularitymc-auto-update.exe`
 ; żeby user nie widział długiej nazwy w Task Manager / Start Menu.
 Source: "..\auto-update\target\release\singularitymc-auto-update.exe"; DestDir: "{app}"; DestName: "auto-update.exe"; Flags: ignoreversion
+; Icon file w install_dir — używany przez [Icons] shortcuty + UninstallDisplayIcon.
+; Duplikat z SetupIconFile (wizard/install-time) ale dedykowany dla post-install.
+Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; Config template — kopiowane TYLKO gdy plik nie istnieje
 ; (onlyifdoesntexist) żeby upgrade nie nadpisał user settings.
 Source: "auto-update-config.template.json"; DestDir: "{app}"; DestName: "auto-update-config.json"; Flags: onlyifdoesntexist
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startmenuicon
+; IconFilename explicit żeby shortcut pokazywał ładną ikonę niezależnie
+; od tego czy auto-update.exe ma embedded icon (winres build.rs). Bez
+; IconFilename Inno używa icon z .exe jako default — redundant ale
+; safer na wypadek gdy exe embed by jakoś zawiódł.
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: startmenuicon
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Registry]
 ; Register `singularitymc://` URL protocol — przyszłe deep linki

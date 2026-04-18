@@ -21,6 +21,24 @@ fn main() {
 
     let version = version_from_git().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     println!("cargo:rustc-env=BUILD_VERSION={version}");
+
+    // Embed launcher Logo jako Win32 icon resource w auto-update.exe.
+    // Bez tego dwuklik na exe w Explorer / taskbar / Alt+Tab pokazują
+    // generic Rust binary icon. Icon.ico jest multi-res 16-256 px
+    // produkowany przez `scripts/build-icons.py` z launcher logo
+    // (singularity-launcher/src/main/resources/icons/Logo.png).
+    #[cfg(windows)]
+    {
+        println!("cargo:rerun-if-changed=../installer/icon.ico");
+        let mut res = winres::WindowsResource::new();
+        res.set_icon("../installer/icon.ico");
+        if let Err(e) = res.compile() {
+            // Nie fail build jeśli ikona nie zbuduje — zbudowana binarka
+            // bez icon to tylko cosmetic regression, nie broken flow.
+            // Inno Setup ma osobny SetupIconFile jako fallback.
+            println!("cargo:warning=winres icon embed failed: {e}");
+        }
+    }
 }
 
 /// Returns Some(version) on clean success, None when git is absent or produced
