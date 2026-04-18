@@ -1,3 +1,16 @@
+// GUI subsystem on Windows: no attached conhost on double-click / shortcut
+// launch. Without this the binary runs as `console` subsystem — Explorer
+// spawns a fresh conhost that briefly flashes and, on some driver configs,
+// the GUI window never becomes visible to the OS compositor (create-window
+// races the console attach). With GUI subsystem winit creates the window
+// directly, no console flashes, double-click / shortcut launch works.
+//
+// Trade-off: `env_logger` output goes to /dev/null when launched from
+// Explorer (GUI apps have no default stdout). During dev run via
+// `cargo run` from a terminal — the parent cmd picks up stdout via
+// inherited handles. Production launcher pipe logs to a file if needed.
+#![windows_subsystem = "windows"]
+
 //! SingularityMC auto-update binary entry point.
 //!
 //! Boot sequence:
