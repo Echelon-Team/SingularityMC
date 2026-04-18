@@ -695,15 +695,7 @@ impl Drop for TempDirGuard {
 ///
 /// Uses `saturating_*` arithmetic so monumentally large retry indices
 /// (u32::MAX) cap cleanly at 30 s instead of wrapping.
-///
-/// **Currently unused in production** — f6 removed the outer-loop
-/// caller. Reintroduced in T2.11f7 when the parked states
-/// (NoInternet / DownloadFailed / OfflineAvailable) start auto-ticking
-/// on this ladder. Kept around (`#[allow(dead_code)]`) so the unit
-/// tests + formula stay reviewed, rather than churning a delete →
-/// re-add across one commit.
 #[must_use]
-#[allow(dead_code)] // used by T2.11f7 background auto-retry
 pub(crate) const fn backoff_floor_secs(retry_index: u32) -> u64 {
     const BASE_SECS: u64 = 8;
     const STEP_SECS: u64 = 2;
@@ -719,14 +711,12 @@ pub(crate) const fn backoff_floor_secs(retry_index: u32) -> u64 {
 /// Jitter ceiling applied on top of [`backoff_floor_secs`]. Uniform
 /// `0..JITTER_MAX_MS` spread keeps retry storms from synchronizing
 /// when many clients retry against a flaky GitHub edge at once.
-#[allow(dead_code)] // used by T2.11f7 background auto-retry
 pub(crate) const JITTER_MAX_MS: u64 = 500;
 
 /// Combine [`backoff_floor_secs`] with a jitter sample drawn from the
 /// caller's RNG. DI-flavoured signature so unit tests can pin the exact
-/// value (deterministic `StepRng`) instead of sampling 20 times and
+/// value (deterministic `SmallRng`) instead of sampling many times and
 /// hoping the distribution hit the asserted bounds.
-#[allow(dead_code)] // used by T2.11f7 background auto-retry
 pub(crate) fn backoff_floor_duration_with_rng<R: rand::Rng + ?Sized>(
     retry_index: u32,
     rng: &mut R,
@@ -740,7 +730,6 @@ pub(crate) fn backoff_floor_duration_with_rng<R: rand::Rng + ?Sized>(
 /// uses `rand::rng()` (thread-local ChaCha12) for the jitter source.
 /// Matches the downloader's existing jitter pattern so both retry
 /// paths stay consistent.
-#[allow(dead_code)] // used by T2.11f7 background auto-retry
 fn backoff_floor_duration_with_jitter(retry_index: u32) -> Duration {
     backoff_floor_duration_with_rng(retry_index, &mut rand::rng())
 }
