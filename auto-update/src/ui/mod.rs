@@ -120,69 +120,50 @@ impl eframe::App for AutoUpdateApp {
                 UiState::Starting => {
                     ui.label(s.starting);
                 }
-                UiState::NoInternet { retry_in_seconds } => {
+                UiState::NoInternet { .. } => {
                     ui.label(s.no_internet);
-                    ui.label(i18n::retry_in_seconds_str(self.lang, *retry_in_seconds));
-                    if ui.button(s.help).clicked() {
-                        let _ = open::that(i18n::DISCORD_URL);
-                    }
+                    ui.label(i18n::retry_in_seconds_str(
+                        self.lang,
+                        current_state.remaining_retry_seconds(),
+                    ));
+                    parked_controls(ui, s, None, &self.on_offline_mode);
                 }
-                UiState::OfflineAvailable { retry_in_seconds } => {
+                UiState::OfflineAvailable { .. } => {
                     // Network still failing after N auto-retries AND a
                     // local install exists — user can keep waiting or
                     // pick Tryb offline. Countdown keeps ticking in the
                     // background; if the API comes back the flow
                     // resumes automatically (T2.11f7).
                     ui.label(s.no_internet);
-                    ui.label(i18n::retry_in_seconds_str(self.lang, *retry_in_seconds));
-                    ui.horizontal(|ui| {
-                        if ui.button(s.help).clicked() {
-                            let _ = open::that(i18n::DISCORD_URL);
-                        }
-                        if ui.button(s.offline_mode).clicked() {
-                            if let Some(cb) = &self.on_offline_mode {
-                                cb();
-                            }
-                        }
-                    });
+                    ui.label(i18n::retry_in_seconds_str(
+                        self.lang,
+                        current_state.remaining_retry_seconds(),
+                    ));
+                    parked_controls(ui, s, Some(true), &self.on_offline_mode);
                 }
-                UiState::DownloadFailed {
-                    retry_in_seconds,
-                    has_offline,
-                } => {
+                UiState::DownloadFailed { has_offline, .. } => {
                     // Auto-retry countdown visible; user doesn't click
                     // Retry — state machine cycles on its own. Offline
                     // button shown only when a local install is
                     // actually available to fall back to (T2.11f4).
                     ui.label(s.download_failed);
-                    ui.label(i18n::retry_in_seconds_str(self.lang, *retry_in_seconds));
-                    ui.horizontal(|ui| {
-                        if *has_offline && ui.button(s.offline_mode).clicked() {
-                            if let Some(cb) = &self.on_offline_mode {
-                                cb();
-                            }
-                        }
-                        if ui.button(s.close).clicked() {
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    });
+                    ui.label(i18n::retry_in_seconds_str(
+                        self.lang,
+                        current_state.remaining_retry_seconds(),
+                    ));
+                    parked_controls(ui, s, Some(*has_offline), &self.on_offline_mode);
                 }
                 UiState::FatalError { message } => {
                     ui.label(s.download_failed);
                     ui.add_space(8.0);
                     ui.label(message);
                     ui.add_space(12.0);
-                    // Explicit dismiss path: without this, a terminal
-                    // error leaves only the window's X as an exit — reads
-                    // as "frozen" to the user. `send_viewport_cmd` closes
-                    // eframe cleanly (runs `on_exit` hooks, releases GPU
-                    // resources), unlike a `process::exit` from the
+                    // Terminal state: no retry, no offline (flow already
+                    // returned Err). Wyjdź + Pomoc only — `send_viewport_cmd`
+                    // closes eframe cleanly (runs `on_exit` hooks, releases
+                    // GPU resources), unlike a `process::exit` from the
                     // background task which would skip teardown.
-                    if ui.button(s.close).clicked() {
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
+                    parked_controls(ui, s, None, &self.on_offline_mode);
                 }
             }
         });
@@ -195,6 +176,38 @@ impl eframe::App for AutoUpdateApp {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
     }
+}
+
+/// Button row shared by every user-facing parked state.
+///
+/// Every state gets Wyjdź + Pomoc; `offline_button` also adds Tryb
+/// offline when `Some(true)`:
+/// - `None`        → NoInternet, FatalError: no offline path available.
+/// - `Some(true)`  → OfflineAvailable or DownloadFailed with local
+///   install on disk.
+/// - `Some(false)` → DownloadFailed without local install — Offline
+///   button hidden so the click wouldn't drop the user into "no
+///   offline install" FatalError.
+fn parked_controls(
+    ui: &mut egui::Ui,
+    s: &i18n::Strings,
+    offline_button: Option<bool>,
+    on_offline_mode: &Option<Callback>,
+) {
+    ui.horizontal(|ui| {
+        if ui.button(s.close).clicked() {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if ui.button(s.help).clicked() {
+            let _ = open::that(i18n::DISCORD_URL);
+        }
+        if matches!(offline_button, Some(true)) && ui.button(s.offline_mode).clicked() {
+            if let Some(cb) = on_offline_mode {
+                cb();
+            }
+        }
+    });
 }
 
 #[cfg(test)]

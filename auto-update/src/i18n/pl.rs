@@ -12,7 +12,7 @@ pub const STRINGS: &Strings = &Strings {
     help: "Pomoc",
     offline_mode: "TRYB OFFLINE",
     retry: "Ponów",
-    close: "Zamknij",
+    close: "Wyjdź",
     no_offline_install:
         "Pobieranie nieudane, a lokalna instalacja nie jest dostępna do trybu offline.",
     unhandled_flow_outcome:

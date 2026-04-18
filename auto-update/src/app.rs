@@ -30,7 +30,7 @@ use crate::{
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// User-initiated action surfaced by the UI when the state machine is
@@ -376,7 +376,6 @@ async fn handle_api_failure(
     let mut iteration: u32 = 0;
     loop {
         iteration = iteration.saturating_add(1);
-        let cooldown_secs = u32::try_from(backoff_floor_secs(iteration)).unwrap_or(u32::MAX);
 
         // Refresh `local` per-iteration so late filesystem writes (user
         // drops a manifest from backup while we're parked) are picked
@@ -411,23 +410,23 @@ async fn handle_api_failure(
             return Err(original_err);
         }
 
-        let ui_state =
-            if iteration <= API_FAILURES_BEFORE_OFFLINE_PROMPT || local.is_none() {
-                UiState::NoInternet {
-                    retry_in_seconds: cooldown_secs,
-                }
-            } else {
-                UiState::OfflineAvailable {
-                    retry_in_seconds: cooldown_secs,
-                }
-            };
-        set_state(&ctx.state, ui_state);
-
+        // Compute sleep FIRST so the UI's `next_tick_at` matches the
+        // real deadline of the `select!` timer (includes jitter). UI
+        // renders `next_tick_at - now` per frame for a live countdown.
         let sleep_duration = if ctx.cfg.retry_interval_secs == 0 {
             Duration::ZERO
         } else {
             backoff_floor_duration_with_jitter(iteration)
         };
+        let next_tick_at = Instant::now() + sleep_duration;
+
+        let ui_state =
+            if iteration <= API_FAILURES_BEFORE_OFFLINE_PROMPT || local.is_none() {
+                UiState::NoInternet { next_tick_at }
+            } else {
+                UiState::OfflineAvailable { next_tick_at }
+            };
+        set_state(&ctx.state, ui_state);
 
         // Race the cooldown sleep against a user click. `biased;` polls
         // the user arm first so a click that lands in the same runtime
@@ -568,7 +567,6 @@ async fn park_on_download_failure(
     let mut iteration: u32 = 0;
     loop {
         iteration = iteration.saturating_add(1);
-        let cooldown_secs = u32::try_from(backoff_floor_secs(iteration)).unwrap_or(u32::MAX);
 
         // Refresh local snapshot per-iteration — a user copy-pasting a
         // manifest from backup while we're parked should flip
@@ -576,19 +574,22 @@ async fn park_on_download_failure(
         let local = manifest::load_local(&ctx.install_dir);
         let has_offline = local.is_some();
 
-        set_state(
-            &ctx.state,
-            UiState::DownloadFailed {
-                retry_in_seconds: cooldown_secs,
-                has_offline,
-            },
-        );
-
+        // Compute sleep FIRST so the UI's `next_tick_at` matches the
+        // real deadline of the `select!` timer (includes jitter).
         let sleep_duration = if ctx.cfg.retry_interval_secs == 0 {
             Duration::ZERO
         } else {
             backoff_floor_duration_with_jitter(iteration)
         };
+        let next_tick_at = Instant::now() + sleep_duration;
+
+        set_state(
+            &ctx.state,
+            UiState::DownloadFailed {
+                next_tick_at,
+                has_offline,
+            },
+        );
 
         tokio::select! {
             biased;
