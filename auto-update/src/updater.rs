@@ -43,6 +43,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Number of `pre-update-*` backup snapshots retained by default.
 pub const DEFAULT_KEEP_BACKUPS: usize = 3;
 
+/// Convenience wrapper — invoke [`Updater::restore_from_latest_backup`]
+/// without constructing an `Updater` explicitly. Used by `main.rs` from
+/// the crash-loop recovery path where the caller just has `install_dir`
+/// and doesn't need the rest of the `Updater` API.
+pub fn perform_launcher_rollback(install_dir: &Path) -> Result<PathBuf> {
+    Updater::new(install_dir).restore_from_latest_backup()
+}
+
 /// Record of one successful swap, tracked for rollback. `backup = None`
 /// means the destination was a fresh install (no prior file to restore);
 /// rollback deletes the destination to restore that state. The `Option`
@@ -259,6 +267,84 @@ impl<'a> Updater<'a> {
     pub fn write_version_file(&self, version: &Version) -> Result<()> {
         let path = self.install_dir.join("version.txt");
         util::atomic_write_bytes(&path, version.as_str().as_bytes())
+    }
+
+    /// Copy files from the newest `File-Backups/pre-update-*` snapshot
+    /// back over `install_dir` — the self-healing rollback target for the
+    /// launcher crash-loop detector (spec §8.1). Returns the path of the
+    /// snapshot used so the caller can log / forensics.
+    ///
+    /// Lexicographic sort on timestamp-embedded snapshot names gives
+    /// deterministic newest-first selection; same ordering used by
+    /// [`Self::cleanup_old_backups`] but traversed in opposite direction.
+    ///
+    /// Does NOT delete `local-manifest.json` or `version.txt` — those are
+    /// left as-is so the next auto-update flow's `diff_manifests` can
+    /// work out what to fix. If the remote manifest is itself what broke
+    /// the launcher (hence the rollback), `main.rs` is responsible for
+    /// gating the next update attempt — out of scope for this function
+    /// which performs the pure copy.
+    ///
+    /// Copy uses [`util::atomic_copy`] per file so a mid-rollback crash
+    /// never leaves half-written restored files; worst case, the next
+    /// rollback attempt re-copies cleanly (idempotent on file content).
+    pub fn restore_from_latest_backup(&self) -> Result<PathBuf> {
+        if !self.backup_dir.is_dir() {
+            return Err(UpdaterError::NotFound(format!(
+                "File-Backups directory does not exist at {}",
+                self.backup_dir.display()
+            )));
+        }
+
+        let mut snapshots: Vec<PathBuf> = std::fs::read_dir(&self.backup_dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_type().ok().is_some_and(|t| t.is_dir())
+                    && e.file_name()
+                        .to_string_lossy()
+                        .starts_with("pre-update-")
+            })
+            .map(|e| e.path())
+            .collect();
+        snapshots.sort();
+
+        let Some(latest) = snapshots.last() else {
+            return Err(UpdaterError::NotFound(format!(
+                "no pre-update-* snapshots in {}",
+                self.backup_dir.display()
+            )));
+        };
+        log::warn!(
+            "restoring launcher files from backup snapshot: {}",
+            latest.display()
+        );
+        Self::copy_tree_recursive(latest, self.install_dir)?;
+        Ok(latest.clone())
+    }
+
+    /// Recursively copy `src_root` tree into `dst_root`, preserving
+    /// relative paths. Files are atomic-copied (sibling tmp + fsync +
+    /// rename) so interruption cannot leave partial reconstructions.
+    /// Directories are created lazily. Symlinks / device files /
+    /// non-regular entries are skipped (none expected in a launcher
+    /// snapshot; silent skip avoids spurious errors on exotic FS).
+    fn copy_tree_recursive(src_root: &Path, dst_root: &Path) -> Result<()> {
+        for entry in std::fs::read_dir(src_root)? {
+            let entry = entry?;
+            let src = entry.path();
+            let dst = dst_root.join(entry.file_name());
+            let ftype = entry.file_type()?;
+            if ftype.is_dir() {
+                std::fs::create_dir_all(&dst)?;
+                Self::copy_tree_recursive(&src, &dst)?;
+            } else if ftype.is_file() {
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                util::atomic_copy(&src, &dst)?;
+            }
+        }
+        Ok(())
     }
 
     /// Prune `File-Backups/pre-update-*` snapshots. Lexicographic sort on
@@ -606,5 +692,96 @@ mod tests {
         assert!(name.starts_with("pre-update-fresh-"));
         let ts_str = name.rsplit('-').next().unwrap();
         assert!(ts_str.parse::<u64>().is_ok());
+    }
+
+    // --- restore_from_latest_backup + perform_launcher_rollback ---
+
+    #[test]
+    fn restore_from_latest_backup_errors_when_no_backups_dir() {
+        let install = TempDir::new().unwrap();
+        // No File-Backups/ created.
+        let result = Updater::new(install.path()).restore_from_latest_backup();
+        assert!(matches!(result, Err(UpdaterError::NotFound(_))));
+    }
+
+    #[test]
+    fn restore_from_latest_backup_errors_when_dir_empty() {
+        let install = TempDir::new().unwrap();
+        std::fs::create_dir_all(install.path().join("File-Backups")).unwrap();
+        let result = Updater::new(install.path()).restore_from_latest_backup();
+        assert!(matches!(result, Err(UpdaterError::NotFound(_))));
+    }
+
+    #[test]
+    fn restore_from_latest_backup_copies_newest_snapshot_overwriting_install() {
+        let install = TempDir::new().unwrap();
+        let root = install.path();
+
+        // Seed a live install with broken content (simulating post-bad-update).
+        let live_jar = root.join("launcher").join("app").join("launcher.jar");
+        std::fs::create_dir_all(live_jar.parent().unwrap()).unwrap();
+        std::fs::write(&live_jar, b"broken post-update content").unwrap();
+
+        // Seed TWO backup snapshots — older and newer. Lex sort on the
+        // timestamp suffix must pick the newer one even when it was
+        // written to disk first (no reliance on filesystem mtime).
+        let backups = root.join("File-Backups");
+        let older = backups.join("pre-update-v0.0.9-1000");
+        let newer = backups.join("pre-update-v0.1.0-2000");
+        let older_jar = older.join("launcher").join("app").join("launcher.jar");
+        let newer_jar = newer.join("launcher").join("app").join("launcher.jar");
+        std::fs::create_dir_all(older_jar.parent().unwrap()).unwrap();
+        std::fs::write(&older_jar, b"OLDER backup content - must NOT win").unwrap();
+        std::fs::create_dir_all(newer_jar.parent().unwrap()).unwrap();
+        std::fs::write(&newer_jar, b"NEWER backup content - expected result").unwrap();
+
+        let used = Updater::new(root).restore_from_latest_backup().unwrap();
+        assert_eq!(used.file_name().unwrap(), "pre-update-v0.1.0-2000");
+        let restored = std::fs::read(&live_jar).unwrap();
+        assert_eq!(restored, b"NEWER backup content - expected result");
+    }
+
+    #[test]
+    fn restore_from_latest_backup_creates_missing_install_subdirs() {
+        // Rollback path runs even when the broken install is so broken
+        // that some directories are missing — e.g. partial swap that
+        // crashed before creating leaf dirs. copy_tree_recursive must
+        // `create_dir_all` on demand, not assume pre-existence.
+        let install = TempDir::new().unwrap();
+        let root = install.path();
+
+        let backups = root.join("File-Backups");
+        let snap = backups.join("pre-update-v0.1.0-1000");
+        let deeply_nested = snap
+            .join("launcher")
+            .join("runtime")
+            .join("lib")
+            .join("modules");
+        std::fs::create_dir_all(deeply_nested.parent().unwrap()).unwrap();
+        std::fs::write(&deeply_nested, b"jre classes").unwrap();
+
+        Updater::new(root).restore_from_latest_backup().unwrap();
+        let dst = root.join("launcher").join("runtime").join("lib").join("modules");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"jre classes");
+    }
+
+    #[test]
+    fn perform_launcher_rollback_is_a_thin_wrapper() {
+        // Convenience fn that `main.rs` calls — exercise the same happy
+        // path as the method form to guard against a refactor dropping
+        // the wrapper or changing its return type.
+        let install = TempDir::new().unwrap();
+        let root = install.path();
+        let snap = root.join("File-Backups").join("pre-update-v0.1.0-1000");
+        let seeded = snap.join("launcher").join("app.jar");
+        std::fs::create_dir_all(seeded.parent().unwrap()).unwrap();
+        std::fs::write(&seeded, b"rolled back").unwrap();
+
+        let path = perform_launcher_rollback(root).unwrap();
+        assert!(path.ends_with("pre-update-v0.1.0-1000"));
+        assert_eq!(
+            std::fs::read(root.join("launcher").join("app.jar")).unwrap(),
+            b"rolled back"
+        );
     }
 }

@@ -19,13 +19,33 @@
 //! launcher-side IPC ack path (launcher writes its own counter; auto-
 //! update writes its own).
 //!
-//! **Threshold semantics:** per spec each counter hits a rollback
-//! threshold at ≥3 crashes. [`increment_crash_counter`] uses
-//! `saturating_add` so a pathological infinite loop never wraps to 0 and
-//! spoofs "all clear" — the counter parks at `u32::MAX` indefinitely but
-//! the state machine treats anything ≥3 as a crash loop anyway, so the
-//! saturation point is purely a defense-in-depth ceiling, not a
-//! functional threshold.
+//! **Threshold semantics:** rollback triggers when counter ≥
+//! [`LAUNCHER_CRASH_THRESHOLD`] (2 — per Mateusz's explicit decision
+//! to trigger rollback on the 3rd launch after 2 consecutive crashes).
+//! Earlier spec draft said ≥3; shortened in 2026-04-18 follow-up so user
+//! recovery happens faster at the cost of tolerating one less transient
+//! crash (benign crashes are already rare and the alive-flag heuristic
+//! accepts them — post-rollback the launcher is known-good from before
+//! the update, so recovery is safer than persistence).
+//!
+//! [`increment_crash_counter`] uses `saturating_add` so a pathological
+//! infinite loop never wraps to 0 and spoofs "all clear" — the counter
+//! parks at `u32::MAX` but the state machine treats anything ≥ threshold
+//! as a crash loop anyway.
+//!
+//! **Alive-flag handshake (crash detection):** launcher writes an empty
+//! `launcher-alive-flag` file into `install_dir` after its first
+//! composable stabilizes (~2 s after startup, post-window-ready). Auto-
+//! update at next boot:
+//!
+//!   1. Flag present → previous launcher reached a stable UI state.
+//!      Reset `launcher_crash_counter`, delete flag.
+//!   2. Flag absent → previous launcher either crashed before the 2 s
+//!      alive tick OR was never run. Increment the counter.
+//!
+//! Counter reaching [`LAUNCHER_CRASH_THRESHOLD`] drives a restore from
+//! the newest `File-Backups/pre-update-*` snapshot. Flag path resolved
+//! via [`launcher_alive_flag_path`].
 //!
 //! **Corrupt-state recovery:** matches [`crate::manifest::load_local`] —
 //! a corrupt state file is renamed to
@@ -110,6 +130,54 @@ pub fn state_path(install_dir: &Path) -> PathBuf {
     install_dir.join("auto-update-state.json")
 }
 
+/// Rollback triggers when [`AutoUpdateState::launcher_crash_counter`]
+/// reaches this value. After 2 consecutive missing alive-flags the 3rd
+/// auto-update boot performs restore from `File-Backups/pre-update-*/`
+/// instead of spawning the (apparently broken) launcher again. See the
+/// module-level "Threshold semantics" note.
+pub const LAUNCHER_CRASH_THRESHOLD: u32 = 2;
+
+/// Path of the "launcher-alive" sentinel in `install_dir`.
+///
+/// The launcher writes this file (via `LauncherAliveFlag.kt` on the
+/// Kotlin side, ~2 s after first composition) to signal "I started
+/// successfully." Auto-update at next boot checks existence; a missing
+/// file is treated as "previous launcher crashed before stabilising"
+/// and bumps the crash counter.
+#[must_use]
+pub fn launcher_alive_flag_path(install_dir: &Path) -> PathBuf {
+    install_dir.join("launcher-alive-flag")
+}
+
+/// Check the alive flag and delete it atomically.
+///
+/// Returns `true` if the flag existed (i.e. previous launcher confirmed
+/// alive), `false` if it was absent. Always leaves the file deleted so
+/// the next run starts from a clean slate — a missing delete after a
+/// `true` return would mis-identify the _next_ run's startup as stable.
+///
+/// I/O errors on deletion are logged and swallowed: the file's mere
+/// existence answered the question, and if the subsequent delete fails
+/// the worst case is the next run starts with an "already alive" reading
+/// despite no launcher run yet — which would skip an increment, which is
+/// strictly safer than spuriously incrementing (cannot cause a false-
+/// positive rollback).
+#[must_use]
+pub fn consume_launcher_alive_flag(install_dir: &Path) -> bool {
+    let path = launcher_alive_flag_path(install_dir);
+    let existed = path.exists();
+    if existed {
+        if let Err(e) = std::fs::remove_file(&path) {
+            log::warn!(
+                "failed to consume launcher-alive-flag at {}: {e} \
+                 (benign — next run will treat it as stable anyway)",
+                path.display()
+            );
+        }
+    }
+    existed
+}
+
 /// Spawn the launcher executable under `install_dir/<launcher_rel_path>`.
 ///
 /// Detaches stdio (`Stdio::null()` on all three streams). On Windows also
@@ -142,6 +210,12 @@ pub fn spawn_launcher(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // Expose install_dir to the launcher so its `LauncherAliveFlag` can
+    // touch `launcher-alive-flag` in the same directory auto-update will
+    // check on next boot. Env-var instead of a CLI arg because current
+    // arg parsing is fixed-form (`--offline` only) and adding a path arg
+    // would need sync between both sides of the contract.
+    cmd.env("SINGULARITY_INSTALL_DIR", install_dir);
 
     #[cfg(windows)]
     {
@@ -264,6 +338,49 @@ mod tests {
         let path = ManifestPath::parse("launcher/does-not-exist.exe").unwrap();
         let result = spawn_launcher(dir.path(), &path, false);
         assert!(matches!(result, Err(UpdaterError::NotFound(_))));
+    }
+
+    // --- launcher-alive-flag handshake ---
+
+    #[test]
+    fn launcher_alive_flag_path_is_colocated_with_state() {
+        // Flag must live in install_dir same as auto-update-state.json —
+        // that's what the Kotlin side reads via `SINGULARITY_INSTALL_DIR`
+        // env var (spawn_launcher sets it to install_dir).
+        let dir = TempDir::new().unwrap();
+        let flag = launcher_alive_flag_path(dir.path());
+        assert_eq!(flag.parent(), Some(dir.path()));
+        assert_eq!(flag.file_name().unwrap(), "launcher-alive-flag");
+    }
+
+    #[test]
+    fn consume_launcher_alive_flag_returns_false_when_absent() {
+        let dir = TempDir::new().unwrap();
+        assert!(!consume_launcher_alive_flag(dir.path()));
+    }
+
+    #[test]
+    fn consume_launcher_alive_flag_returns_true_and_deletes_when_present() {
+        let dir = TempDir::new().unwrap();
+        let flag = launcher_alive_flag_path(dir.path());
+        std::fs::write(&flag, b"").unwrap();
+        assert!(flag.exists(), "pre-condition: flag written");
+        assert!(consume_launcher_alive_flag(dir.path()));
+        assert!(
+            !flag.exists(),
+            "consume must delete flag so next boot starts clean"
+        );
+        // Calling again must be idempotent — flag already gone → false.
+        assert!(!consume_launcher_alive_flag(dir.path()));
+    }
+
+    #[test]
+    fn launcher_crash_threshold_matches_spec_decision() {
+        // Threshold 2 — Mateusz 2026-04-18: "po 2 crashach z rzędu system
+        // się uaktywnia a trzecie włączenie launchera skutkuje automatycznym
+        // skopiowaniem plików". Pinned so any future tuning is an explicit
+        // review change, not silent drift.
+        assert_eq!(LAUNCHER_CRASH_THRESHOLD, 2);
     }
 
     // --- CrashCounterKind + state accessor methods ---

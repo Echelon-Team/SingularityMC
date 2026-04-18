@@ -38,8 +38,9 @@ use singularitymc_auto_update::app::{
     current_os_target, run_update_flow_with_config, FlowOutcome, RunUpdateFlowConfig, UserAction,
 };
 use singularitymc_auto_update::i18n::{resolve_lang, strings};
+use singularitymc_auto_update::launcher::{CrashCounterKind, LAUNCHER_CRASH_THRESHOLD};
 use singularitymc_auto_update::ui::{states::UiState, AutoUpdateApp};
-use singularitymc_auto_update::{config, launcher, self_update};
+use singularitymc_auto_update::{config, launcher, manifest, self_update, updater};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -88,6 +89,26 @@ fn main() -> anyhow::Result<()> {
     }
 
     self_update::cleanup_stale_files(&install_dir);
+
+    // Launcher crash-loop detector + self-healing rollback. Runs BEFORE
+    // any update flow work so a broken previous update gets reverted
+    // instead of re-attempted.
+    //
+    // Handshake:
+    //   1. Last launcher run wrote `launcher-alive-flag` (via Kotlin
+    //      `LauncherAliveFlag.write()` 2 s after first composition)
+    //      → reset counter, consume flag.
+    //   2. Flag absent → either previous run crashed before the 2 s
+    //      alive tick, or the binary never ran. Increment counter.
+    //   3. Counter reached `LAUNCHER_CRASH_THRESHOLD` (2 per Mateusz's
+    //      explicit decision — 3rd boot triggers rollback after 2
+    //      consecutive crashes) → copy files from the newest
+    //      `File-Backups/pre-update-*/` back over `install_dir/launcher`,
+    //      reset counter, set `did_rollback` so the bg task skips the
+    //      normal update flow (the rolled-back state is the intended
+    //      "known good" — re-entering update would just re-pull the
+    //      broken version).
+    let did_rollback = handle_launcher_crash_counter(&install_dir);
 
     let cfg = config::load(&install_dir);
     let lang = resolve_lang(cfg.language);
@@ -141,6 +162,36 @@ fn main() -> anyhow::Result<()> {
     let cfg = RunUpdateFlowConfig::default().with_strings(strings(lang));
 
     rt.spawn(async move {
+        // Post-rollback short-circuit: skip the whole update flow and go
+        // straight to `spawn_and_exit` using the local manifest's launcher
+        // path. Re-entering `run_update_flow_with_config` would re-fetch
+        // the remote manifest and re-download the very files we just
+        // reverted, re-breaking the install. If local manifest is somehow
+        // missing (rollback succeeded but manifest file was also lost),
+        // surface FatalError — user needs to reinstall.
+        if did_rollback {
+            match manifest::load_local(&install_dir_bg) {
+                Some(local) => {
+                    log::warn!(
+                        "rolled back from crash loop; launching rolled-back version {}",
+                        local.version
+                    );
+                    spawn_and_exit(&state_bg, &install_dir_bg, &local.launcher_executable, false)
+                        .await;
+                }
+                None => {
+                    log::error!("post-rollback local manifest missing — cannot spawn launcher");
+                    singularitymc_auto_update::app::set_state(
+                        &state_bg,
+                        UiState::FatalError {
+                            message: strings(lang).no_offline_install.to_string(),
+                        },
+                    );
+                }
+            }
+            return;
+        }
+
         let outcome = run_update_flow_with_config(
             install_dir_bg.clone(),
             channel,
@@ -322,3 +373,64 @@ fn apply_win11_rounded_corners(cc: &eframe::CreationContext<'_>) {
 /// Non-Windows stub — the rounded-corner path is Win11-specific.
 #[cfg(not(windows))]
 fn apply_win11_rounded_corners(_cc: &eframe::CreationContext<'_>) {}
+
+/// Consume the `launcher-alive-flag`, update the Launcher crash counter
+/// accordingly, and trigger a File-Backups rollback when the counter
+/// reaches threshold. Returns `true` if a rollback was performed —
+/// caller short-circuits the normal update flow in that case.
+///
+/// Failure modes are degraded gracefully:
+/// - Counter read / write errors → logged, flow continues (missing one
+///   crash detection is strictly better than blocking the whole boot).
+/// - Rollback fails (no `File-Backups/`, IO error) → logged error,
+///   `did_rollback = false`, normal update flow runs as a last-chance
+///   recovery attempt.
+fn handle_launcher_crash_counter(install_dir: &PathBuf) -> bool {
+    let alive = launcher::consume_launcher_alive_flag(install_dir);
+    if alive {
+        if let Err(e) = launcher::reset_crash_counter(install_dir, CrashCounterKind::Launcher) {
+            log::warn!("reset launcher crash counter failed: {e}");
+        } else {
+            log::info!("previous launcher run was stable (alive flag consumed)");
+        }
+        return false;
+    }
+
+    let count = match launcher::increment_crash_counter(install_dir, CrashCounterKind::Launcher)
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("increment launcher crash counter failed: {e}");
+            return false;
+        }
+    };
+    log::info!(
+        "launcher alive flag absent; launcher_crash_counter now {count} \
+         (threshold {LAUNCHER_CRASH_THRESHOLD})"
+    );
+
+    if count < LAUNCHER_CRASH_THRESHOLD {
+        return false;
+    }
+
+    log::warn!(
+        "launcher crash counter {count} >= threshold {LAUNCHER_CRASH_THRESHOLD}; \
+         performing rollback from newest File-Backups snapshot"
+    );
+    match updater::perform_launcher_rollback(install_dir) {
+        Ok(snapshot) => {
+            log::warn!("rolled back launcher files from {}", snapshot.display());
+            if let Err(e) = launcher::reset_crash_counter(install_dir, CrashCounterKind::Launcher)
+            {
+                log::warn!("reset launcher crash counter after rollback failed: {e}");
+            }
+            true
+        }
+        Err(e) => {
+            log::error!(
+                "launcher rollback failed: {e}; user may need to reinstall manually"
+            );
+            false
+        }
+    }
+}

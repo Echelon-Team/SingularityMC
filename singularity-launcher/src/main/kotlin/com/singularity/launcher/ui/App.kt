@@ -101,6 +101,22 @@ private val logger = LoggerFactory.getLogger("com.singularity.launcher.ui.App")
 
 @Composable
 fun App() {
+    // Handshake z auto-update crash-loop detector: po 2 s stable w
+    // Compose (pierwszy frame rendered + app scope żyje) touchuje
+    // `$SINGULARITY_INSTALL_DIR/launcher-alive-flag`. Auto-update przy
+    // next boot czyta flag → reset launcher_crash_counter. Brak flag
+    // (crash w ciągu pierwszych 2 s lub nie wywołane) → counter rośnie
+    // → po 2 consecutive missing-flag boots auto-update rolluje pliki
+    // z `File-Backups/pre-update-*/`. Env var brak = launcher odpalony
+    // bez auto-update (dev `./gradlew run`) → no-op. IO na Dispatchers.IO
+    // żeby nie blokować głównego compose thread-a przy write.
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(2000)
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.singularity.launcher.util.LauncherAliveFlag.write()
+        }
+    }
+
     val home = System.getProperty("user.home")
     val launcherHome = Path.of(home, ".singularitymc")
 
