@@ -237,7 +237,12 @@ jobs:
           bash scripts/copy-release-files.sh artifacts/build-windows/singularity-launcher/build/compose/binaries/main/app/SingularityMC release/ windows
           bash scripts/copy-release-files.sh artifacts/build-linux/singularity-launcher/build/compose/binaries/main/app/SingularityMC release/ linux
           echo "--- Release assets ---"
-          ls -lah release/ | head -40
+          # `|| true` — z `set -euo pipefail` na górze step-a, `ls | head
+          # -40` wybucha EPIPE gdy release/ ma >40 plików: head kończy
+          # się OK, ls próbuje pisać dalej, dostaje broken pipe, exit
+          # ≠0, pipefail zwraca to jako exit step-a. Debug print nie ma
+          # prawa wysadzać builda, stąd tolerancja failure tu.
+          ls -lah release/ | head -40 || true
           echo "--- Total ---"
           du -sh release/
 
