@@ -51,6 +51,12 @@ ICO_SIZES = [16, 32, 48, 64, 128, 256]
 # 256x256 dla high-DPI desktop integration; smaller je downscale w locie.
 APPIMAGE_SIZE = 256
 
+# Padding wokół wykadrowanego logo w gotowej ikonie, jako ułamek rozmiaru
+# kanwy. Logo.png ma ~15% białego marginesu wokół rysunku, więc bez
+# kadrowania logo zajmuje tylko ~70% W/H gotowej ikony i wizualnie wygląda
+# za małe w Explorerze. Windows icon design guidelines: ~5-8% safe area.
+ICON_PADDING = 0.04
+
 
 def whitewash_to_alpha(img: Image.Image) -> Image.Image:
     """Zamień biały background na alpha.
@@ -85,6 +91,22 @@ def whitewash_to_alpha(img: Image.Image) -> Image.Image:
     return Image.fromarray(arr, "RGBA")
 
 
+def fit_to_square(img: Image.Image, size: int, padding: float) -> Image.Image:
+    """Crop do alpha bbox i wpasuj w kwadrat rozmiaru ``size`` z paddingiem."""
+    bbox = img.getbbox()
+    if bbox is None:
+        return img.resize((size, size), Image.LANCZOS)
+    cropped = img.crop(bbox)
+    cw, ch = cropped.size
+    inner = int(size * (1 - 2 * padding))
+    scale = inner / max(cw, ch)
+    new_w, new_h = max(1, int(cw * scale)), max(1, int(ch * scale))
+    resized = cropped.resize((new_w, new_h), Image.LANCZOS)
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas.paste(resized, ((size - new_w) // 2, (size - new_h) // 2), resized)
+    return canvas
+
+
 def main() -> None:
     if not SRC.exists():
         raise SystemExit(f"source missing: {SRC}")
@@ -95,12 +117,20 @@ def main() -> None:
     alpha_full = whitewash_to_alpha(src)
 
     DST_PNG.parent.mkdir(parents=True, exist_ok=True)
-    png = alpha_full.resize((APPIMAGE_SIZE, APPIMAGE_SIZE), Image.LANCZOS)
+    png = fit_to_square(alpha_full, APPIMAGE_SIZE, ICON_PADDING)
     png.save(DST_PNG, format="PNG")
     print(f"wrote: {DST_PNG} {APPIMAGE_SIZE}x{APPIMAGE_SIZE}")
 
-    # PIL sam downsampluje do każdego rozmiaru w sizes= liście.
-    alpha_full.save(DST_ICO, format="ICO", sizes=[(s, s) for s in ICO_SIZES])
+    # Per-size fit — downsampling cropped logo daje ostrzejszy result niż
+    # jedno PIL multi-size save z niekadrowanego źródła (które też zachowuje
+    # biały margines w każdym rozmiarze).
+    frames = [fit_to_square(alpha_full, s, ICON_PADDING) for s in ICO_SIZES]
+    frames[0].save(
+        DST_ICO,
+        format="ICO",
+        sizes=[(s, s) for s in ICO_SIZES],
+        append_images=frames[1:],
+    )
     print(f"wrote: {DST_ICO} sizes={ICO_SIZES}")
 
 
