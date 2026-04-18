@@ -213,7 +213,10 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "SingularityMC Auto-Update",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(app) as Box<dyn eframe::App>)),
+        Box::new(move |cc| {
+            apply_win11_rounded_corners(cc);
+            Ok(Box::new(app) as Box<dyn eframe::App>)
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
 
@@ -263,3 +266,59 @@ async fn spawn_and_exit(
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     std::process::exit(0);
 }
+
+/// Ask the Win11 DWM to draw rounded corners on our borderless window.
+///
+/// Normal route to rounded corners — `with_transparent(true)` + an
+/// alpha-cut custom frame — fails silently on this project's dev
+/// machine: NVIDIA + Overwolf's Vulkan implicit layer combine to
+/// produce a wgpu surface that only advertises `CompositeAlphaMode::Opaque`,
+/// so the OS never composites our transparent pixels away. This path
+/// sidesteps wgpu entirely: DWM draws the rounding outside the swap
+/// chain, same system Win11 uses for native apps. Fails silently on
+/// Win10 (`DWMWA_WINDOW_CORNER_PREFERENCE` unsupported on that OS — the
+/// attribute is just ignored, which is the correct graceful fallback).
+#[cfg(windows)]
+fn apply_win11_rounded_corners(cc: &eframe::CreationContext<'_>) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+
+    let handle = match cc.window_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("window_handle() unavailable — skip rounded corners: {e}");
+            return;
+        }
+    };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+        log::warn!("non-Win32 window handle — skip rounded corners");
+        return;
+    };
+    // SAFETY: `hwnd` is a live Win32 window handle owned by the eframe
+    // runtime at this point (we're inside `run_native`'s creator before
+    // the event loop starts consuming events). `DwmSetWindowAttribute`
+    // with `DWMWA_WINDOW_CORNER_PREFERENCE` takes a 4-byte enum and
+    // doesn't retain the pointer after return.
+    let hwnd = HWND(win32.hwnd.get() as *mut _);
+    let pref: i32 = DWMWCP_ROUND.0;
+    unsafe {
+        if let Err(e) = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            std::ptr::from_ref(&pref).cast(),
+            std::mem::size_of::<i32>() as u32,
+        ) {
+            log::warn!(
+                "DwmSetWindowAttribute(DWMWCP_ROUND) failed: {e} \
+                 (non-fatal — window just stays square)"
+            );
+        }
+    }
+}
+
+/// Non-Windows stub — the rounded-corner path is Win11-specific.
+#[cfg(not(windows))]
+fn apply_win11_rounded_corners(_cc: &eframe::CreationContext<'_>) {}

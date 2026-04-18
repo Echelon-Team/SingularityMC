@@ -104,6 +104,23 @@ atomicwrites = "0.4"
 # recommended pattern.
 rand = "0.9"
 
+# Raw window handle access (Win32 HWND from eframe's CreationContext) so we
+# can call DwmSetWindowAttribute for Win11 rounded corners. eframe 0.34 pulls
+# raw-window-handle 0.6 transitively via winit — pinning it directly here
+# keeps version drift visible in a single diff.
+raw-window-handle = "0.6"
+
+# Win32 DwmSetWindowAttribute for Win11 `DWMWA_WINDOW_CORNER_PREFERENCE`
+# (OS-level rounded corners — works even when the wgpu surface can't do
+# transparent compositing, which is the path that silently fails on NVIDIA +
+# Overwolf's Vulkan implicit layer). Windows-only target gate keeps Linux
+# builds from pulling in the crate.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+] }
+
 [dev-dependencies]
 # tempfile — filesystem isolation for config / manifest / downloader / updater
 # module tests. Each test gets a throw-away directory that self-deletes on drop.
