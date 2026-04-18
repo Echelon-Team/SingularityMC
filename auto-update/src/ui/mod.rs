@@ -85,16 +85,19 @@ const TITLEBAR_HEIGHT: f32 = 30.0;
 /// state.
 const BUTTON_ROW_HEIGHT: f32 = 44.0;
 
-/// End Dimension theme base colour (`--base` from launcher's
-/// `SingularityTheme.kt`). Hex `#14121D`. Keeps the updater visually
-/// tied to the launcher it's about to hand off to.
-const BG_COLOR: egui::Color32 = egui::Color32::from_rgb(0x14, 0x12, 0x1D);
+/// End Dimension theme colours used for the window background
+/// gradient. Gradient goes top → bottom from `--surface-1` (a vivid
+/// deep purple) down to `--base` (near-black purple). Values pulled
+/// from launcher's `SingularityTheme.kt` so the updater visually
+/// matches the launcher it's about to hand off to.
+const GRADIENT_TOP: egui::Color32 = egui::Color32::from_rgb(0x2F, 0x19, 0x5F);
+const GRADIENT_BOTTOM: egui::Color32 = egui::Color32::from_rgb(0x14, 0x12, 0x1D);
 
 impl eframe::App for AutoUpdateApp {
-    /// Solid End Dimension clear — avoids the transparency dance that
-    /// wgpu's `CompositeAlphaMode` can't honour on some GPU stacks
-    /// (NVIDIA + Overwolf Vulkan hooks, etc.). Matches the painted
-    /// `CentralPanel` fill so the window reads as one flat surface.
+    /// Clear to the gradient's bottom colour so any area outside the
+    /// painted `CentralPanel` frame (shouldn't happen in practice, but
+    /// safety) matches the visible bottom of the gradient instead of
+    /// flashing black.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         const fn srgb(b: u8) -> f32 {
             b as f32 / 255.0
@@ -102,22 +105,27 @@ impl eframe::App for AutoUpdateApp {
         [srgb(0x14), srgb(0x12), srgb(0x1D), 1.0]
     }
 
-    /// Override `update` instead of just implementing `ui` so we can
-    /// install a custom `CentralPanel` frame — corner rounding + End
-    /// Dimension fill. The default `update` wraps `ui` in a plain
-    /// CentralPanel with no rounding and the standard visuals fill.
-    /// Rounded corners stay in the Frame even without a transparent
-    /// window — they're invisible against a matching `clear_color` but
-    /// remain "free" for a follow-up that wires the Win11 native
-    /// rounding API (DwmSetWindowAttribute) or restores transparency
-    /// once a cross-driver surface config is known.
+    /// Override `update` to install a custom `CentralPanel` frame
+    /// (corner rounding + End Dimension base fill), paint the vertical
+    /// gradient mesh on top, and theme the buttons to accent-primary
+    /// purple so they don't render as default-neutral grey against the
+    /// purple background. Default `update` wraps `ui` in a plain
+    /// CentralPanel with no rounding, no gradient, no custom button
+    /// visuals.
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let panel_frame = egui::Frame::default()
-            .fill(BG_COLOR)
+            .fill(GRADIENT_BOTTOM)
             .corner_radius(egui::CornerRadius::same(WINDOW_CORNER_RADIUS));
         egui::CentralPanel::default()
             .frame(panel_frame)
-            .show(ctx, |ui| self.ui(ui, frame));
+            .show(ctx, |ui| {
+                // Paint gradient BEFORE any widget draws — mesh becomes
+                // the lowest layer; everything the inner `ui()` renders
+                // lands on top.
+                paint_vertical_gradient(ui, GRADIENT_TOP, GRADIENT_BOTTOM);
+                apply_button_theme(ui);
+                self.ui(ui, frame);
+            });
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -141,13 +149,33 @@ impl eframe::App for AutoUpdateApp {
         //                    window bottom (fixed-height reservation
         //                    regardless of state so the layout doesn't
         //                    jump when transitioning).
+        //
+        // Carved via explicit rects + `scope_builder` because
+        // `allocate_ui_with_layout` lays children top-down from the
+        // current cursor — which doesn't pin the button row to the
+        // bottom. Rect-based lets us reserve the bottom strip first,
+        // then the middle fills everything above it with a
+        // `centered_and_justified` layout that really does center on
+        // both axes.
         draw_titlebar(ui);
 
-        let content_height =
-            (ui.available_height() - BUTTON_ROW_HEIGHT).max(0.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), content_height),
-            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+        let remaining = ui.available_rect_before_wrap();
+        let buttons_rect = egui::Rect::from_min_size(
+            egui::pos2(remaining.min.x, remaining.max.y - BUTTON_ROW_HEIGHT),
+            egui::vec2(remaining.width(), BUTTON_ROW_HEIGHT),
+        );
+        let content_rect = egui::Rect::from_min_max(
+            remaining.min,
+            egui::pos2(remaining.max.x, remaining.max.y - BUTTON_ROW_HEIGHT),
+        );
+
+        // Middle — vertically + horizontally centered.
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(content_rect)
+                .layout(egui::Layout::centered_and_justified(
+                    egui::Direction::TopDown,
+                )),
             |ui| {
                 ui.vertical_centered(|ui| {
                     render_content(ui, &current_state, s, lang);
@@ -155,11 +183,17 @@ impl eframe::App for AutoUpdateApp {
             },
         );
 
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), BUTTON_ROW_HEIGHT),
-            egui::Layout::top_down(egui::Align::Center),
+        // Bottom row — horizontally centered, pinned to bottom.
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(buttons_rect)
+                .layout(egui::Layout::centered_and_justified(
+                    egui::Direction::LeftToRight,
+                )),
             |ui| {
-                render_buttons(ui, &current_state, s, &self.on_offline_mode);
+                ui.horizontal(|ui| {
+                    render_buttons(ui, &current_state, s, &self.on_offline_mode);
+                });
             },
         );
 
@@ -171,6 +205,73 @@ impl eframe::App for AutoUpdateApp {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
     }
+}
+
+/// Paint a vertical gradient spanning the ui's full available rect.
+/// Implemented as a 4-vertex `Mesh` with per-vertex colour — egui's
+/// `Shape` layer interpolates between top and bottom in the fragment
+/// rasteriser, so we get a smooth gradient without per-pixel work.
+fn paint_vertical_gradient(
+    ui: &egui::Ui,
+    top: egui::Color32,
+    bottom: egui::Color32,
+) {
+    let rect = ui.available_rect_before_wrap();
+    let mut mesh = egui::epaint::Mesh::default();
+    let uv = egui::epaint::WHITE_UV;
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_top(),
+        uv,
+        color: top,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_top(),
+        uv,
+        color: top,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_bottom(),
+        uv,
+        color: bottom,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_bottom(),
+        uv,
+        color: bottom,
+    });
+    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+    ui.painter().add(egui::Shape::mesh(mesh));
+}
+
+/// Theme buttons to End-Dimension accent-primary so they read as
+/// clickable against the purple gradient instead of blending into
+/// default neutral grey. Mutates the current `Ui`'s visuals — scope
+/// is the closure it was called from (`update`'s `CentralPanel::show`
+/// closure), which covers every widget painted afterwards including
+/// the `render_buttons` children.
+fn apply_button_theme(ui: &mut egui::Ui) {
+    let accent = egui::Color32::from_rgb(0x7F, 0x3F, 0xB2); // --accent-primary
+    let accent_hover = egui::Color32::from_rgb(0xA2, 0x33, 0xEB); // --accent-tertiary
+    let accent_active = egui::Color32::from_rgb(0x5F, 0x2F, 0x92); // darker primary
+    let visuals = ui.visuals_mut();
+    // Button fill lands on `weak_bg_fill` for flat widgets,
+    // `bg_fill` for emphasised ones — set both so the chosen colour
+    // sticks regardless of which path the widget takes.
+    visuals.widgets.inactive.bg_fill = accent;
+    visuals.widgets.inactive.weak_bg_fill = accent;
+    visuals.widgets.hovered.bg_fill = accent_hover;
+    visuals.widgets.hovered.weak_bg_fill = accent_hover;
+    visuals.widgets.active.bg_fill = accent_active;
+    visuals.widgets.active.weak_bg_fill = accent_active;
+    // White text on purple — readable + matches launcher's onPrimary.
+    visuals.widgets.inactive.fg_stroke.color = egui::Color32::WHITE;
+    visuals.widgets.hovered.fg_stroke.color = egui::Color32::WHITE;
+    visuals.widgets.active.fg_stroke.color = egui::Color32::WHITE;
+    // Round button corners a little — matches the window corner vibe.
+    let br = egui::CornerRadius::same(4);
+    visuals.widgets.inactive.corner_radius = br;
+    visuals.widgets.hovered.corner_radius = br;
+    visuals.widgets.active.corner_radius = br;
 }
 
 /// Paint the top drag region with centered app name.
