@@ -2,10 +2,13 @@ package com.singularity.launcher.config
 
 import com.singularity.launcher.ui.theme.ThemeMode
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
+import java.util.Locale
 
 class LauncherSettingsRoundtripTest {
 
@@ -13,6 +16,24 @@ class LauncherSettingsRoundtripTest {
     lateinit var tempDir: Path
 
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true; encodeDefaults = true }
+
+    private lateinit var originalLocale: Locale
+
+    // LauncherSettingsStore.load() na pierwszym uruchomieniu wywołuje
+    // Locale.getDefault().language i daje language="en" jeśli system nie
+    // jest pl. GitHub Windows runner ma en-US, więc bez wymuszenia locale
+    // test `Store load-save roundtrip...` leci na asercji initial==default.
+    // Wymuszamy pl by test był deterministyczny niezależnie od runnera.
+    @BeforeEach
+    fun pinLocale() {
+        originalLocale = Locale.getDefault()
+        Locale.setDefault(Locale.forLanguageTag("pl"))
+    }
+
+    @AfterEach
+    fun restoreLocale() {
+        Locale.setDefault(originalLocale)
+    }
 
     @Test
     fun `default settings has sensible values`() {

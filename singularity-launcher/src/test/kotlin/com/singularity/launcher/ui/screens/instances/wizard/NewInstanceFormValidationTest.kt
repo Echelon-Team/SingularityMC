@@ -70,10 +70,13 @@ class NewInstanceFormValidationTest {
 
     @Test
     fun `resourcesStepValidate ram range 1024 to totalRam`() {
-        assertFalse(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 512, threads = 4), totalRam = 16384))
-        assertTrue(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 1024, threads = 4), totalRam = 16384))
-        assertTrue(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 16384, threads = 4), totalRam = 16384))
-        assertFalse(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 20000, threads = 4), totalRam = 16384))
+        // maxThreads jawnie — bez tego default = HardwareInfo.maxAssignableThreads
+        // (totalCores - 2), co na 4-CPU GH runnerze = 2 i threads=4 leci w false
+        // od strony threadsOk, rozwalając ten RAM-focused test.
+        assertFalse(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 512, threads = 4), totalRam = 16384, maxThreads = 8))
+        assertTrue(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 1024, threads = 4), totalRam = 16384, maxThreads = 8))
+        assertTrue(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 16384, threads = 4), totalRam = 16384, maxThreads = 8))
+        assertFalse(NewInstanceWizardLogic.resourcesStepValidate(NewInstanceForm(ramMb = 20000, threads = 4), totalRam = 16384, maxThreads = 8))
     }
 
     @Test
