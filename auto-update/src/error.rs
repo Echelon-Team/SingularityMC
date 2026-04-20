@@ -97,6 +97,19 @@ pub enum UpdaterError {
     #[error("self-update swap failed: {0}")]
     SelfUpdateSwapFailed(#[source] std::io::Error),
 
+    /// Tar.gz archive extraction failed — separate from pure `Io` variant
+    /// bo callers mogą chcieć retry logic specific dla archive corruption
+    /// (re-download) vs filesystem errors (bail / permission issue).
+    /// `context` nosi ludzko-czytelny opis (np. "unpack launcher.tar.gz to
+    /// install_dir/launcher") dla diagnostics; `source` zachowuje original
+    /// `io::Error` chain (backtrace, ErrorKind) dla structured handling.
+    #[error("tar.gz extract failed: {context}")]
+    Extract {
+        context: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     /// Self-replace swap SUCCEEDED but respawning the new binary failed.
     /// Binary on disk IS the new version; next manual launch will run it.
     /// NOT safe to retry as "update" — the pending file is gone. State

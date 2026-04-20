@@ -351,6 +351,11 @@ fn is_permanent_error(err: &UpdaterError) -> bool {
             std::io::ErrorKind::PermissionDenied
                 | std::io::ErrorKind::ReadOnlyFilesystem
         ),
+        UpdaterError::Extract { source, .. } => matches!(
+            source.kind(),
+            std::io::ErrorKind::PermissionDenied
+                | std::io::ErrorKind::ReadOnlyFilesystem
+        ),
         UpdaterError::Network(_) | UpdaterError::NotFound(_) => false,
     }
 }
