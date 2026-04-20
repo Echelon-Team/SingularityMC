@@ -1,22 +1,34 @@
-//! Release manifest types matching the `manifest.json` schema emitted by the
-//! Phase 3 release workflow (one manifest per release × OS).
+//! Release manifest types matching the `manifest-<os>.json` schema emitted
+//! przez Phase 3 release workflow (jeden manifest per release × OS).
 //!
-//! The remote manifest is fetched from GitHub Releases assets in Task 2.4.
-//! A copy of the currently-installed manifest is persisted as
-//! `local-manifest.json` under the launcher install dir so we can diff
-//! subsequent remote manifests and only download changed files.
+//! **Format evolution (od v1.1.x):** struktura przeszła z per-file
+//! (`files: Vec<FileEntry>`) na 3-package model — `launcher`, `jre`,
+//! `autoUpdate` jako named fields. Motywacja:
+//! - Eliminuje GitHub secondary rate limit na upload (250 assetów → ~5)
+//! - Eliminuje dotfile 404 bug (dotfiles wewnątrz tar nie są filtrowane
+//!   przez GitHub release API, tylko gołe asset names)
+//! - Upraszcza update flow (1 download + 1 extract per bundle vs 250
+//!   osobnych HTTP + fs operations)
+//!
+//! **Update decision strategy:**
+//! - `launcher` + `jre` — sha256 compare (deterministic tar packing =
+//!   identical sha256 gdy source nie zmienił się)
+//! - `autoUpdate` — `version` compare (Cargo.toml bump controlled przez
+//!   developera, `feedback_auto_update_version_bump` rule)
+//!
+//! **Local state:** `install_dir/local-manifest.json` zachowuje snapshot
+//! aktualnego stanu (what's installed). Diff vs remote decyduje download.
 
 use crate::{util, ManifestPath, Result, Sha256, UpdaterError, Version};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Target OS identifier on the wire. Matches the per-OS asset naming
-/// convention in GitHub releases (`manifest-windows.json`, `manifest-linux.json`).
-/// `#[non_exhaustive]` future-proofs adding macOS or ARM variants without
-/// breaking downstream matchers.
+/// Target OS identifier na wire. Matches per-OS asset naming
+/// (`manifest-windows.json`, `manifest-linux.json`, `launcher-windows.tar.gz`
+/// etc.). `#[non_exhaustive]` future-proofs dodanie macOS / ARM wariantów
+/// bez breaking downstream matcherów w zewnętrznych crates (wewnątrz
+/// naszego crate'a match pozostaje exhaustive, bez wildcard — zweryfikowane
+/// przez web-research, non_exhaustive ignored within defining crate).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
@@ -25,459 +37,286 @@ pub enum OsTarget {
     Linux,
 }
 
-/// Top-level manifest for a single release × OS.
+/// Top-level manifest dla jednego release × OS.
 ///
-/// Wire field names use camelCase via `#[serde(rename_all = "camelCase")]` —
-/// keeps the JSON schema consistent without per-field renames. Rust field
-/// names stay snake_case per language convention.
+/// Wire field names = camelCase (via `#[serde(rename_all = "camelCase")]`);
+/// Rust field names snake_case per language convention. Nested structs
+/// (`PackageEntry`, `AutoUpdatePackage`) powtarzają `rename_all` bo serde
+/// `rename_all` NIE propaguje rekursywnie — trzeba deklarować per struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
+    /// Release tag (bez prefiksu `v`), np. "0.4.7". Identyfikuje całą
+    /// dystrybucję — gdy lokalna `version` != remote, trigger update flow.
     pub version: Version,
     pub os: OsTarget,
-    /// ISO-8601 UTC timestamp. Opaque string at this layer — UI display only.
-    /// Introducing a `chrono`/`time` dep for one display-only field would be
-    /// disproportionate.
+    /// ISO-8601 UTC timestamp. Opaque string na tym poziomie — używany
+    /// tylko dla UI display. Unikamy zależności od `chrono`/`time` dla
+    /// jednego display-only field.
     pub released_at: String,
-    /// Lowest auto-update binary version that can safely install this
-    /// manifest. If our `BUILD_VERSION < min_auto_update_version`, Task 2.7
-    /// must self-update before proceeding.
+    /// Najstarsza akceptowana wersja auto-update która może zainstalować
+    /// ten manifest. Jeśli local `BUILD_VERSION < min_auto_update_version`,
+    /// `app.rs::process_release` emituje FatalError z komunikatem
+    /// "pobierz nowy installer" — schema major bumps via tego gate.
     pub min_auto_update_version: Version,
-    /// Path inside `install_dir` to the launcher executable, validated
-    /// (no traversal, relative, forward-slash-separated) via [`ManifestPath`].
-    /// Used by the launcher-spawner in Task 2.8.
+    /// Path w install_dir do launcher executable (walidowany ManifestPath —
+    /// no traversal, relative, forward-slash). Typowo: "launcher/SingularityMC.exe"
+    /// (Windows), "launcher/bin/SingularityMC" (Linux).
     pub launcher_executable: ManifestPath,
-    /// Markdown changelog rendered in the auto-update UI and surfaced as the
-    /// launcher's Aktualności entry for this release (spec 4.12).
+    /// Markdown changelog — wyświetlany w UI auto-update + news feed launcher-a
+    /// (spec §4.12). Domyślnie pusty string dla release'ów bez notes.
     #[serde(default)]
     pub changelog: String,
-    pub files: Vec<FileEntry>,
+    /// Launcher bundle (tar.gz): JARs, native Compose libs, SingularityMC.exe,
+    /// cfg, dotfiles z app/ folder. Wszystko poza `runtime/` z jpackage output.
+    pub launcher: PackageEntry,
+    /// JRE bundle (tar.gz): content folder `runtime/` z jpackage output
+    /// (bin/java.exe, lib/jvm.dll, modules, conf, ...).
+    pub jre: PackageEntry,
+    /// Auto-update binary (raw .exe / Linux ELF, NIE w tar — pojedynczy plik
+    /// żeby self_replace crate mógł swap-in-place).
+    pub auto_update: AutoUpdatePackage,
 }
 
-/// Individual tracked file: validated install path, download URL, declared
-/// size, and SHA-256 integrity hash.
+/// Generic tar.gz package entry: download URL + integrity + size.
+/// Identyfikowany przez sha256 — deterministic tar packing gwarantuje
+/// że remote sha == local sha gdy source nie zmienił się (skip download).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileEntry {
-    /// Path relative to `install_dir` — validated at construction time.
-    /// See [`ManifestPath`] for the security rationale (zip-slip protection).
-    pub path: ManifestPath,
-    /// Download URL. Kept as `String` for Task 2.3 — reqwest accepts `&str`
-    /// and does its own parse in Task 2.5. Promote to `url::Url` if/when
-    /// host allowlisting (e.g. pinning to github.com) becomes a requirement.
+#[serde(rename_all = "camelCase")]
+pub struct PackageEntry {
+    /// Download URL — full `https://github.com/Echelon-Team/SingularityMC/
+    /// releases/download/v{ver}/{asset-name}`. Asset names są immutable
+    /// per memory rule `project_release_asset_naming_immutable`.
     pub url: String,
-    pub size: u64,
     pub sha256: Sha256,
+    pub size: u64,
+}
+
+/// Auto-update binary entry: dodatkowe `version` field (z Cargo.toml
+/// `[package].version`) dla decyzji download. Porównujemy `version`,
+/// nie sha256 — rebuild w CI daje różne sha nawet bez zmian kodu
+/// (timestamps, build metadata). `version` bump jest controlled przez
+/// developera (feedback rule).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoUpdatePackage {
+    pub url: String,
+    pub sha256: Sha256,
+    pub size: u64,
+    /// SemVer z `auto-update/Cargo.toml [package].version`, np. "1.1.4".
+    pub version: Version,
 }
 
 impl Manifest {
-    /// Parse a JSON manifest string. Fails fast on schema / type / validation
-    /// mismatch (invalid SHA-256, unknown OS enum, missing required field,
-    /// empty version, traversal in a path) AND on semantic validation
-    /// (duplicate paths inside `files`).
+    /// Parse JSON manifest string. Fail-fast na schema / type / validation
+    /// mismatch (invalid SHA-256, unknown OS, missing field, traversal path).
+    /// Newtypes (Version, Sha256, ManifestPath) samodzielnie walidują przez
+    /// `#[serde(try_from = "String")]`.
     pub fn parse(json: &str) -> Result<Self> {
-        let manifest: Manifest = serde_json::from_str(json)?;
-        manifest.validate()?;
-        Ok(manifest)
+        serde_json::from_str(json).map_err(UpdaterError::Json)
     }
 
+    /// Pretty-print JSON dla local-manifest.json (human-readable diffs
+    /// w razie manualnego sprawdzenia stanu instalki).
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string_pretty(self).map_err(UpdaterError::Json)
     }
 
-    /// Post-deserialization semantic check. Today: no duplicate paths inside
-    /// `files`. Future additions (e.g. total-size sanity bounds) land here.
-    fn validate(&self) -> Result<()> {
-        let mut seen: HashSet<&str> = HashSet::with_capacity(self.files.len());
-        for entry in &self.files {
-            if !seen.insert(entry.path.as_str()) {
-                return Err(UpdaterError::Manifest(format!(
-                    "duplicate file path in manifest: {}",
-                    entry.path
-                )));
-            }
+    /// Read local manifest z `install_dir/local-manifest.json`.
+    /// Missing file → Ok(None) (fresh install, nothing to compare).
+    /// Corrupt JSON → Err — caller decyduje (zwykle: treat as fresh).
+    pub fn read_local(install_dir: &Path) -> Result<Option<Self>> {
+        let path = local_manifest_path(install_dir);
+        if !path.exists() {
+            return Ok(None);
         }
-        Ok(())
+        let json = std::fs::read_to_string(&path).map_err(UpdaterError::Io)?;
+        Self::parse(&json).map(Some)
+    }
+
+    /// Persist self jako `install_dir/local-manifest.json`. Atomic write
+    /// via `util::atomic_write_bytes` (temp + rename + fsync) — unikamy
+    /// half-written plik gdy crash między pisaniem a fsync.
+    pub fn write_local(&self, install_dir: &Path) -> Result<()> {
+        let path = local_manifest_path(install_dir);
+        let json = self.to_json()?;
+        util::atomic_write_bytes(&path, json.as_bytes())
     }
 }
 
-/// Where `local-manifest.json` lives under `install_dir`.
+/// Where `local-manifest.json` lives under `install_dir`. Public helper
+/// dla modułów które potrzebują raw path (np. uninstall cleanup lub
+/// diagnostyka) bez konstruowania Manifest instance.
 #[must_use]
 pub fn local_manifest_path(install_dir: &Path) -> PathBuf {
     install_dir.join("local-manifest.json")
 }
 
-/// Load the installed-version manifest. Returns `None` for a fresh install
-/// (file absent) AND for a corrupt/unreadable local file — with a warn log
-/// in the corrupt case, and the corrupt file renamed to
-/// `local-manifest.json.corrupt-{unix_ts}` so the next launch doesn't repeat
-/// the warn and forensic copies accumulate rather than overwrite.
-///
-/// A `None` return causes the differ to treat all remote files as needing
-/// download — a safe (if bandwidth-costly) recovery from local-state rot.
-#[must_use]
-pub fn load_local(install_dir: &Path) -> Option<Manifest> {
-    let path = local_manifest_path(install_dir);
-    match std::fs::read_to_string(&path) {
-        Ok(content) => match Manifest::parse(&content) {
-            Ok(m) => Some(m),
-            Err(e) => {
-                let ts = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let corrupt = path.with_extension(format!("json.corrupt-{ts}"));
-                log::warn!(
-                    "local-manifest.json at {} is corrupt: {e}; renaming to {} and treating as absent — next update will redownload all files",
-                    path.display(),
-                    corrupt.display()
-                );
-                if let Err(rename_err) = std::fs::rename(&path, &corrupt) {
-                    log::warn!(
-                        "Failed to preserve corrupt local-manifest.json as {}: {rename_err}",
-                        corrupt.display()
-                    );
-                }
-                None
-            }
-        },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => {
-            log::warn!(
-                "Failed to read local-manifest.json at {}: {e}; treating as absent — next update will redownload all files",
-                path.display()
-            );
-            None
-        }
-    }
-}
-
-/// Persist the post-update manifest as the new "installed" state.
-pub fn save_local(install_dir: &Path, manifest: &Manifest) -> Result<()> {
-    let path = local_manifest_path(install_dir);
-    let parent = path
-        .parent()
-        .expect("local_manifest_path always has a parent dir by construction");
-    std::fs::create_dir_all(parent)?;
-    let content = manifest.to_json()?;
-    util::atomic_write_bytes(&path, content.as_bytes())
-}
-
-/// Compute the set of files the downloader (Task 2.5) must fetch: every
-/// remote entry whose SHA-256 differs from the corresponding local entry, or
-/// that is missing locally entirely.
-///
-/// `local = None` returns every remote file — matching the fresh-install case.
-/// Files present only in the local manifest (deleted upstream) are NOT
-/// reported: cleanup of orphaned files is the updater's concern (Task 2.6).
-#[must_use]
-pub fn diff_manifests(local: Option<&Manifest>, remote: &Manifest) -> Vec<FileEntry> {
-    let local_hashes: HashMap<&str, &Sha256> = local
-        .map(|m| {
-            m.files
-                .iter()
-                .map(|f| (f.path.as_str(), &f.sha256))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    remote
-        .files
-        .iter()
-        .filter(|remote_file| match local_hashes.get(remote_file.path.as_str()) {
-            Some(local_hash) => *local_hash != &remote_file.sha256,
-            None => true,
-        })
-        .cloned()
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
+    use tempfile::tempdir;
 
-    // 64-char lowercase hex placeholders — valid Sha256 payloads, distinct
-    // enough to pin which one survived through assertions.
-    const HASH_A: &str = "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0";
-    const HASH_B: &str = "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1";
-    const HASH_N: &str = "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2";
-
-    fn file(path: &str, hash_hex: &str) -> FileEntry {
-        FileEntry {
-            path: ManifestPath::parse(path).unwrap(),
-            url: format!("https://example.com/{path}"),
-            size: 100,
-            sha256: Sha256::parse(hash_hex).unwrap(),
+    const VALID_MANIFEST: &str = r#"{
+        "version": "0.4.7",
+        "os": "windows",
+        "releasedAt": "2026-04-20T12:34:56Z",
+        "minAutoUpdateVersion": "1.0.0",
+        "launcherExecutable": "launcher/SingularityMC.exe",
+        "changelog": "- Fixed X\n- Added Y",
+        "launcher": {
+            "url": "https://github.com/Echelon-Team/SingularityMC/releases/download/v0.4.7/launcher-windows.tar.gz",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+            "size": 26214400
+        },
+        "jre": {
+            "url": "https://github.com/Echelon-Team/SingularityMC/releases/download/v0.4.7/jre-windows.tar.gz",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+            "size": 31457280
+        },
+        "autoUpdate": {
+            "url": "https://github.com/Echelon-Team/SingularityMC/releases/download/v0.4.7/auto-update-windows.exe",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+            "size": 6291456,
+            "version": "1.1.4"
         }
-    }
-
-    fn manifest(version: &str, files: Vec<FileEntry>) -> Manifest {
-        Manifest {
-            version: Version::parse(version).unwrap(),
-            os: OsTarget::Windows,
-            released_at: "2026-04-15T10:00:00Z".to_string(),
-            min_auto_update_version: Version::parse("0.1.0").unwrap(),
-            launcher_executable: ManifestPath::parse("launcher/SingularityMC.exe").unwrap(),
-            changelog: "- fix".to_string(),
-            files,
-        }
-    }
-
-    // --- Parsing + validation ---
+    }"#;
 
     #[test]
-    fn parse_valid_manifest_round_trips() {
-        let original = manifest("1.2.3", vec![file("a.jar", HASH_A), file("b.jar", HASH_B)]);
-        let json = original.to_json().unwrap();
-        let parsed = Manifest::parse(&json).unwrap();
-        assert_eq!(parsed, original);
+    fn parse_valid_manifest_fills_all_fields() {
+        let m = Manifest::parse(VALID_MANIFEST).unwrap();
+        assert_eq!(m.version.as_str(), "0.4.7");
+        assert_eq!(m.os, OsTarget::Windows);
+        assert_eq!(m.released_at, "2026-04-20T12:34:56Z");
+        assert_eq!(m.min_auto_update_version.as_str(), "1.0.0");
+        assert_eq!(m.launcher_executable.as_str(), "launcher/SingularityMC.exe");
+        assert!(m.changelog.contains("Fixed X"));
+        assert_eq!(m.launcher.size, 26214400);
+        assert_eq!(m.jre.size, 31457280);
+        assert_eq!(m.auto_update.size, 6291456);
+        assert_eq!(m.auto_update.version.as_str(), "1.1.4");
     }
 
     #[test]
-    fn parse_uses_camelcase_wire_fields() {
-        // Pin the camelCase rename_all — guards against a future refactor
-        // switching the wire format without coordinating with the Phase 3
-        // release workflow.
-        let m = manifest("1.2.3", vec![]);
-        let json = m.to_json().unwrap();
-        assert!(json.contains("\"releasedAt\""));
-        assert!(json.contains("\"minAutoUpdateVersion\""));
-        assert!(json.contains("\"launcherExecutable\""));
-        // snake_case on wire must NOT appear.
-        assert!(!json.contains("released_at"));
-        assert!(!json.contains("min_auto_update_version"));
-        assert!(!json.contains("launcher_executable"));
+    fn roundtrip_to_json_and_back_preserves_all_fields() {
+        // Struct-based serde zachowuje insertion order z deklaracji struct,
+        // więc bit-exact roundtrip jest gwarantowany (żadnych HashMap).
+        let m = Manifest::parse(VALID_MANIFEST).unwrap();
+        let serialized = m.to_json().unwrap();
+        let reparsed = Manifest::parse(&serialized).unwrap();
+        assert_eq!(m, reparsed);
     }
 
     #[test]
-    fn parse_rejects_invalid_sha256() {
-        let bad = r#"{
-            "version":"1.0.0","os":"windows","releasedAt":"2026-04-15T10:00:00Z",
-            "minAutoUpdateVersion":"0.1.0","launcherExecutable":"app.exe",
-            "files":[{"path":"a.jar","url":"https://example.com/a.jar","size":100,"sha256":"TOOSHORT"}]
-        }"#;
-        assert!(matches!(Manifest::parse(bad), Err(UpdaterError::Json(_))));
+    fn parse_missing_launcher_field_fails() {
+        let invalid = VALID_MANIFEST.replace(r#""launcher":"#, r#""invalid":"#);
+        let result = Manifest::parse(&invalid);
+        assert!(matches!(result, Err(UpdaterError::Json(_))));
     }
 
     #[test]
-    fn parse_rejects_uppercase_sha256() {
-        let uppercase_hash = "A".repeat(64);
-        let bad = format!(
-            r#"{{"version":"1.0.0","os":"windows","releasedAt":"t","minAutoUpdateVersion":"0.1.0","launcherExecutable":"x","files":[{{"path":"a","url":"u","size":1,"sha256":"{uppercase_hash}"}}]}}"#
+    fn parse_missing_jre_field_fails() {
+        let invalid = VALID_MANIFEST.replace(r#""jre":"#, r#""invalid":"#);
+        let result = Manifest::parse(&invalid);
+        assert!(matches!(result, Err(UpdaterError::Json(_))));
+    }
+
+    #[test]
+    fn parse_missing_auto_update_field_fails() {
+        let invalid = VALID_MANIFEST.replace(r#""autoUpdate":"#, r#""invalid":"#);
+        let result = Manifest::parse(&invalid);
+        assert!(matches!(result, Err(UpdaterError::Json(_))));
+    }
+
+    #[test]
+    fn parse_invalid_sha256_length_fails() {
+        let invalid = VALID_MANIFEST.replace(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "abc",
         );
-        assert!(matches!(Manifest::parse(&bad), Err(UpdaterError::Json(_))));
+        let result = Manifest::parse(&invalid);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn parse_rejects_invalid_os() {
-        let bad = r#"{
-            "version":"1.0.0","os":"macos","releasedAt":"t","minAutoUpdateVersion":"0.1.0",
-            "launcherExecutable":"app.exe","files":[]
-        }"#;
-        assert!(matches!(Manifest::parse(bad), Err(UpdaterError::Json(_))));
+    fn parse_unknown_os_variant_fails() {
+        let invalid = VALID_MANIFEST.replace(r#""os": "windows""#, r#""os": "freebsd""#);
+        let result = Manifest::parse(&invalid);
+        assert!(matches!(result, Err(UpdaterError::Json(_))));
     }
 
     #[test]
-    fn parse_rejects_capitalized_os_enforcing_lowercase_rename() {
-        // Pins rename_all="lowercase" — a future regression switching to
-        // case-insensitive matching would silently accept "Windows".
-        let bad = r#"{
-            "version":"1.0.0","os":"Windows","releasedAt":"t","minAutoUpdateVersion":"0.1.0",
-            "launcherExecutable":"app.exe","files":[]
-        }"#;
-        assert!(matches!(Manifest::parse(bad), Err(UpdaterError::Json(_))));
-    }
-
-    #[test]
-    fn parse_rejects_empty_version() {
-        let bad = r#"{
-            "version":"","os":"windows","releasedAt":"t","minAutoUpdateVersion":"0.1.0",
-            "launcherExecutable":"app.exe","files":[]
-        }"#;
-        assert!(matches!(Manifest::parse(bad), Err(UpdaterError::Json(_))));
-    }
-
-    #[test]
-    fn parse_rejects_missing_required_field() {
-        let bad = r#"{
-            "version":"1.0.0","os":"windows","releasedAt":"t","minAutoUpdateVersion":"0.1.0",
-            "launcherExecutable":"app.exe"
-        }"#;
-        assert!(matches!(Manifest::parse(bad), Err(UpdaterError::Json(_))));
-    }
-
-    #[test]
-    fn parse_rejects_duplicate_paths_in_files() {
-        // Schema invariant — malformed generator or malicious manifest must
-        // not produce order-dependent diff behavior.
-        let bad = format!(
-            r#"{{"version":"1.0.0","os":"windows","releasedAt":"t","minAutoUpdateVersion":"0.1.0","launcherExecutable":"app.exe","files":[{{"path":"dup.jar","url":"u","size":1,"sha256":"{HASH_A}"}},{{"path":"dup.jar","url":"u","size":1,"sha256":"{HASH_B}"}}]}}"#
+    fn parse_absolute_launcher_executable_fails() {
+        // ManifestPath walidator rejects absolute paths + ../ traversal.
+        let invalid = VALID_MANIFEST.replace(
+            r#""launcherExecutable": "launcher/SingularityMC.exe""#,
+            r#""launcherExecutable": "/etc/passwd""#,
         );
-        let result = Manifest::parse(&bad);
-        assert!(
-            matches!(result, Err(UpdaterError::Manifest(ref msg)) if msg.contains("duplicate")),
-            "expected UpdaterError::Manifest about duplicates, got {result:?}"
-        );
+        let result = Manifest::parse(&invalid);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn parse_rejects_path_traversal_via_files() {
-        // Zip-slip defense — via ManifestPath::try_from during deserialize.
-        let bad = format!(
-            r#"{{"version":"1.0.0","os":"windows","releasedAt":"t","minAutoUpdateVersion":"0.1.0","launcherExecutable":"app.exe","files":[{{"path":"../../evil.exe","url":"u","size":1,"sha256":"{HASH_A}"}}]}}"#
-        );
-        assert!(matches!(Manifest::parse(&bad), Err(UpdaterError::Json(_))));
-    }
-
-    #[test]
-    fn parse_rejects_backslash_path_via_files() {
-        let bad = format!(
-            r#"{{"version":"1.0.0","os":"windows","releasedAt":"t","minAutoUpdateVersion":"0.1.0","launcherExecutable":"app.exe","files":[{{"path":"launcher\\app.jar","url":"u","size":1,"sha256":"{HASH_A}"}}]}}"#
-        );
-        assert!(matches!(Manifest::parse(&bad), Err(UpdaterError::Json(_))));
-    }
-
-    #[test]
-    fn parse_rejects_traversal_launcher_executable() {
-        let bad = r#"{
-            "version":"1.0.0","os":"windows","releasedAt":"t","minAutoUpdateVersion":"0.1.0",
-            "launcherExecutable":"../../etc/malicious","files":[]
-        }"#;
-        assert!(matches!(Manifest::parse(bad), Err(UpdaterError::Json(_))));
-    }
-
-    #[test]
-    fn parse_accepts_missing_changelog_via_serde_default() {
-        let ok = r#"{
-            "version":"1.0.0","os":"windows","releasedAt":"t","minAutoUpdateVersion":"0.1.0",
-            "launcherExecutable":"app.exe","files":[]
-        }"#;
-        let m = Manifest::parse(ok).unwrap();
+    fn parse_default_changelog_when_missing() {
+        // `#[serde(default)]` dla changelog — manifest bez tego pola
+        // deserializuje z pustym string.
+        let minimal = VALID_MANIFEST.replace(r#""changelog": "- Fixed X\n- Added Y","#, "");
+        let m = Manifest::parse(&minimal).unwrap();
         assert_eq!(m.changelog, "");
     }
 
-    // --- Diff ---
-
     #[test]
-    fn diff_with_no_local_returns_all_remote_files() {
-        let remote = manifest("1.2.3", vec![file("a.jar", HASH_A), file("b.jar", HASH_B)]);
-        assert_eq!(diff_manifests(None, &remote).len(), 2);
+    fn read_local_returns_none_when_missing() {
+        let tmp = tempdir().unwrap();
+        let result = Manifest::read_local(tmp.path()).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
-    fn diff_with_identical_hashes_returns_empty() {
-        let remote = manifest("1.2.3", vec![file("a.jar", HASH_A)]);
-        let local = manifest("1.2.3", vec![file("a.jar", HASH_A)]);
-        assert!(diff_manifests(Some(&local), &remote).is_empty());
+    fn read_local_parses_existing_file() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("local-manifest.json"), VALID_MANIFEST).unwrap();
+        let result = Manifest::read_local(tmp.path()).unwrap().unwrap();
+        assert_eq!(result.version.as_str(), "0.4.7");
     }
 
     #[test]
-    fn diff_detects_hash_mismatch() {
-        let remote = manifest("1.2.3", vec![file("a.jar", HASH_B)]);
-        let local = manifest("1.2.0", vec![file("a.jar", HASH_A)]);
-        let diff = diff_manifests(Some(&local), &remote);
-        assert_eq!(diff.len(), 1);
-        assert_eq!(diff[0].sha256.as_str(), HASH_B);
+    fn read_local_returns_err_on_corrupt_json() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("local-manifest.json"), "{not valid").unwrap();
+        let result = Manifest::read_local(tmp.path());
+        assert!(matches!(result, Err(UpdaterError::Json(_))));
     }
 
     #[test]
-    fn diff_detects_file_missing_from_local() {
-        let remote = manifest(
-            "1.2.3",
-            vec![file("a.jar", HASH_A), file("new.jar", HASH_N)],
-        );
-        let local = manifest("1.2.0", vec![file("a.jar", HASH_A)]);
-        let diff = diff_manifests(Some(&local), &remote);
-        assert_eq!(diff.len(), 1);
-        assert_eq!(diff[0].path.as_str(), "new.jar");
+    fn write_local_then_read_roundtrip() {
+        let tmp = tempdir().unwrap();
+        let original = Manifest::parse(VALID_MANIFEST).unwrap();
+        original.write_local(tmp.path()).unwrap();
+
+        let loaded = Manifest::read_local(tmp.path()).unwrap().unwrap();
+        assert_eq!(original, loaded);
     }
 
     #[test]
-    fn diff_ignores_files_only_in_local() {
-        let remote = manifest("1.2.3", vec![file("a.jar", HASH_A)]);
-        let local = manifest(
-            "1.2.0",
-            vec![file("a.jar", HASH_A), file("old.jar", HASH_B)],
-        );
-        assert!(diff_manifests(Some(&local), &remote).is_empty());
-    }
+    fn write_local_overwrites_existing() {
+        let tmp = tempdir().unwrap();
+        // Pierwszy write
+        let original = Manifest::parse(VALID_MANIFEST).unwrap();
+        original.write_local(tmp.path()).unwrap();
 
-    // --- Local persistence ---
+        // Drugi write z inną wersją — atomic rename nadpisuje
+        let modified_json = VALID_MANIFEST.replace(r#""version": "0.4.7""#, r#""version": "0.4.8""#);
+        let modified = Manifest::parse(&modified_json).unwrap();
+        modified.write_local(tmp.path()).unwrap();
 
-    #[test]
-    fn load_local_missing_returns_none() {
-        let dir = TempDir::new().unwrap();
-        assert!(load_local(dir.path()).is_none());
-    }
-
-    #[test]
-    fn load_local_corrupt_returns_none_and_renames_file() {
-        let dir = TempDir::new().unwrap();
-        let path = local_manifest_path(dir.path());
-        std::fs::write(&path, "{ not json").unwrap();
-        assert!(load_local(dir.path()).is_none());
-        // Original corrupt path should be gone (renamed away for forensics).
-        assert!(
-            !path.exists(),
-            "corrupt local-manifest.json must be renamed, not left in place"
-        );
-        // A `.corrupt-*` sibling should exist for post-mortem inspection.
-        let corrupt_exists = std::fs::read_dir(dir.path())
-            .unwrap()
-            .any(|e| {
-                e.unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".corrupt-")
-            });
-        assert!(corrupt_exists, "expected a .corrupt-* forensic file");
+        let loaded = Manifest::read_local(tmp.path()).unwrap().unwrap();
+        assert_eq!(loaded.version.as_str(), "0.4.8");
     }
 
     #[test]
-    fn load_local_corrupt_twice_does_not_repeat_warn() {
-        // Second launch sees NotFound (original renamed on first call) — no
-        // repeat warn. Pinned by observing side effect: second call returns
-        // None without any file remaining to parse.
-        let dir = TempDir::new().unwrap();
-        let path = local_manifest_path(dir.path());
-        std::fs::write(&path, "{ not json").unwrap();
-        assert!(load_local(dir.path()).is_none());
-        assert!(load_local(dir.path()).is_none());
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn load_local_io_error_returns_none() {
-        let dir = TempDir::new().unwrap();
-        std::fs::create_dir(local_manifest_path(dir.path())).unwrap();
-        assert!(load_local(dir.path()).is_none());
-    }
-
-    #[test]
-    fn save_local_then_load_local_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let original = manifest("1.2.3", vec![file("a.jar", HASH_A)]);
-        save_local(dir.path(), &original).unwrap();
-        let loaded = load_local(dir.path()).unwrap();
-        assert_eq!(loaded, original);
-    }
-
-    #[test]
-    fn save_local_produces_pretty_json() {
-        let dir = TempDir::new().unwrap();
-        let m = manifest("1.2.3", vec![file("a.jar", HASH_A)]);
-        save_local(dir.path(), &m).unwrap();
-        let raw = std::fs::read_to_string(local_manifest_path(dir.path())).unwrap();
-        assert!(raw.contains('\n'));
-    }
-
-    #[test]
-    fn save_local_returns_io_error_when_parent_is_a_file() {
-        let dir = TempDir::new().unwrap();
-        let fake_parent = dir.path().join("im_a_file");
-        std::fs::write(&fake_parent, "").unwrap();
-        let m = manifest("1.2.3", vec![]);
-        let result = save_local(&fake_parent, &m);
-        assert!(matches!(result, Err(UpdaterError::Io(_))));
+    fn local_manifest_path_joins_install_dir() {
+        let p = local_manifest_path(Path::new("/tmp/install"));
+        assert_eq!(p, PathBuf::from("/tmp/install/local-manifest.json"));
     }
 }

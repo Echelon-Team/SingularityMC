@@ -53,7 +53,7 @@ pub use updater::Updater;
 // `release.assets` field access; adding it to the public root would widen
 // the API surface for zero gain.
 pub use github_api::{GitHubClient, Release};
-pub use manifest::{FileEntry, Manifest, OsTarget};
+pub use manifest::{AutoUpdatePackage, Manifest, OsTarget, PackageEntry};
 
 use serde::{Deserialize, Serialize};
 
