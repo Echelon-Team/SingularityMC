@@ -57,36 +57,52 @@ OS_SUFFIX="$3"
 
 if [ ! -d "$LAUNCHER_ROOT" ]; then
     echo "launcherDistRoot nie jest katalogiem: $LAUNCHER_ROOT" >&2
+    # Diagnostic: co faktycznie createDistributable wygenerowało pod
+    # `compose/binaries/main/app/`? Typowy mismatch to Compose Desktop
+    # `nativeDistributions.packageName` override (Linux = "singularitymc"
+    # lowercase, Win = "SingularityMC") niezsynchronizowany z release.yml
+    # matrix `app_dir_name`.
+    PARENT_DIR=$(dirname "$LAUNCHER_ROOT")
+    if [ -d "$PARENT_DIR" ]; then
+        echo "Faktyczna zawartość $PARENT_DIR:" >&2
+        ls -la "$PARENT_DIR" >&2
+    else
+        echo "Parent $PARENT_DIR także nie istnieje — createDistributable zapewne failował." >&2
+    fi
     exit 1
 fi
 
-# Per-OS runtime source path + exclude pattern dla launcher tarball.
-# jpackage `--type app-image` produkuje różny layout na Windows vs Linux:
-#   Windows: runtime/ SIBLING exe (root-level)
-#   Linux:   lib/runtime/ NESTED w lib/ (razem z lib/app/)
-# Więcej: https://docs.oracle.com/en/java/javase/17/jpackage/ (Output Format)
 case "$OS_SUFFIX" in
-    windows)
-        RUNTIME_SRC="$LAUNCHER_ROOT/runtime"
-        # --anchored żeby wzorzec matchował od root archiwum (inaczej
-        # --exclude=runtime matchowałby także np. runtime w głębszej
-        # strukturze, fałszywe pozytywy). Path relative do `-C` dir.
-        LAUNCHER_EXCLUDE='./runtime'
-        ;;
-    linux)
-        RUNTIME_SRC="$LAUNCHER_ROOT/lib/runtime"
-        LAUNCHER_EXCLUDE='./lib/runtime'
-        ;;
+    windows|linux) ;;
     *)
         echo "osSuffix musi być 'windows' lub 'linux', got: $OS_SUFFIX" >&2
         exit 1
         ;;
 esac
 
-if [ ! -d "$RUNTIME_SRC" ]; then
-    echo "brak runtime folder w $RUNTIME_SRC — jpackage createDistributable się nie wykonał?" >&2
+# Auto-detect runtime location. jpackage `--type app-image` różni się per OS:
+#   Windows: runtime/ SIBLING exe (root-level z app/, launcher.exe)
+#   Linux:   lib/runtime/ NESTED w lib/ (razem z lib/app/, lib/launcher.cfg)
+# Ale Compose Desktop może customize layout w przyszłych wersjach, a CI
+# runnery mogą mieć inne defaults — auto-detect + diagnostic na miss zamiast
+# hardcode.
+if [ -d "$LAUNCHER_ROOT/runtime" ]; then
+    RUNTIME_SRC="$LAUNCHER_ROOT/runtime"
+    # --anchored matchuje pattern od archiwum root (path relative do `-C` dir).
+    LAUNCHER_EXCLUDE='./runtime'
+elif [ -d "$LAUNCHER_ROOT/lib/runtime" ]; then
+    RUNTIME_SRC="$LAUNCHER_ROOT/lib/runtime"
+    LAUNCHER_EXCLUDE='./lib/runtime'
+else
+    echo "brak runtime folder w $LAUNCHER_ROOT/{runtime,lib/runtime} —" >&2
+    echo "jpackage createDistributable się nie wykonał LUB Compose Desktop" >&2
+    echo "zmienił layout output'u. Diagnostic dump struktury (3 levels):" >&2
+    # Native `find` dla diagnostyki — pokaż co faktycznie jest w output dir.
+    # max-depth=3 powinien złapać runtime/ w obu znanych locations i dodatkowe.
+    find "$LAUNCHER_ROOT" -maxdepth 3 -type d | head -40 >&2
     exit 1
 fi
+echo "Detected runtime at: $RUNTIME_SRC"
 
 mkdir -p "$OUTPUT_DIR"
 LAUNCHER_OUT="$OUTPUT_DIR/launcher-$OS_SUFFIX.tar.gz"
