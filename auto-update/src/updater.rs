@@ -64,9 +64,14 @@ impl UpdateDecision {
 /// Decyduje co pobrać na podstawie remote manifest vs local snapshot.
 ///
 /// - `local = None` (fresh install, brak `local-manifest.json`) → all three needed.
-/// - `local = Some(m)` → per-package compare: sha256 dla launcher/jre
-///   (deterministic tar = same sha means same content), version dla
-///   auto-update (sha nie jest deterministic bo Rust rebuild timestamps).
+/// - `local = Some(m)` → per-package compare:
+///   - launcher / jre: sha256 `!=` (deterministic tar = same sha means same
+///     content; downgrade sha też triggeruje download, co jest pożądane —
+///     user manualnie rollback'ował release tag = akceptuje nowe bundle'e)
+///   - auto-update: version `is_older_than` (monotonic: downgrade NIE
+///     triggeruje download). Inaczej remote force-downgrade cofnąłby
+///     security fixy w auto-update binarce. Hash fix dla WARN z code-
+///     quality-v1 review — wcześniej `!=` pozwalał downgrade silently.
 #[must_use]
 pub fn decide_update(remote: &Manifest, local: Option<&Manifest>) -> UpdateDecision {
     match local {
@@ -78,7 +83,10 @@ pub fn decide_update(remote: &Manifest, local: Option<&Manifest>) -> UpdateDecis
         Some(l) => UpdateDecision {
             launcher_needed: l.launcher.sha256 != remote.launcher.sha256,
             jre_needed: l.jre.sha256 != remote.jre.sha256,
-            auto_update_needed: l.auto_update.version != remote.auto_update.version,
+            auto_update_needed: l
+                .auto_update
+                .version
+                .is_older_than(&remote.auto_update.version),
         },
     }
 }
@@ -327,6 +335,28 @@ mod tests {
         assert!(!decision.launcher_needed);
         assert!(!decision.jre_needed);
         assert!(decision.auto_update_needed);
+    }
+
+    #[test]
+    fn decide_update_skips_auto_update_downgrade() {
+        // Monotonic policy: remote < local auto-update version → NIE
+        // triggeruje download. Chroni przed force-downgrade security fixów.
+        let remote = dummy_manifest("1", "2", "1.0.5");
+        let local = dummy_manifest("1", "2", "1.2.0");
+        let decision = decide_update(&remote, Some(&local));
+        assert!(!decision.auto_update_needed, "downgrade must not trigger download");
+    }
+
+    #[test]
+    fn decide_update_equal_auto_update_no_download() {
+        // Identyczna wersja (typowy case gdy bundle się zmienił ale
+        // auto-update został) — skip download.
+        let remote = dummy_manifest("9", "9", "1.1.0");
+        let local = dummy_manifest("1", "1", "1.1.0");
+        let decision = decide_update(&remote, Some(&local));
+        assert!(decision.launcher_needed);
+        assert!(decision.jre_needed);
+        assert!(!decision.auto_update_needed);
     }
 
     // --- verify_sha256 ---
