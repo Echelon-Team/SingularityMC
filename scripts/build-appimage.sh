@@ -20,9 +20,13 @@
 set -euo pipefail
 
 # Tempdir dla AppDir structure. trap sprząta nawet gdy appimagetool
-# się wysypie.
+# się wysypie. Single-quoted body żeby `$APPDIR` rozwiazywało się DOPIERO
+# przy odpalaniu trapu (lazy expansion) — SC2064 best practice. Dla
+# tego konkretnego skryptu różnica jest akademicka (APPDIR stały), ale
+# single-quote = zero ryzyka że reassignment by shell logic expandował
+# na pusto i `rm -rf ''` by no-op wywalił.
 APPDIR=$(mktemp -d)
-trap "rm -rf '$APPDIR'" EXIT
+trap 'rm -rf "$APPDIR"' EXIT
 
 # AppRun = entry point. Bootstrap pobiera auto-update przy pierwszym
 # uruchomieniu (nie bundled — patrz installer/AppRun).

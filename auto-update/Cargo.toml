@@ -16,7 +16,12 @@ name = "singularitymc-auto-update"
 # → ten sam commit bumpuje version. 1.0.0 → 1.1.0 (minor: nowy feature —
 # tar.gz bundle extraction + 3-package manifest schema). 1.1.0 → 1.1.1
 # (patch: build.rs pre-release SemVer strip guard — hardening, no API change).
-version = "1.2.7"
+# 1.2.x → 1.3.0 (minor: nested runtime layout — RUNTIME_DIR per-OS
+# "launcher/runtime" vs "launcher/lib/runtime" matching jpackage native
+# layout + preserve_runtime/restore_preserved_runtime dla launcher-only
+# updates. Breaks niezgodne z pre-1.3.x `install_dir/runtime/` na disku —
+# fresh install path jedyna droga, stąd minor not patch).
+version = "1.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Auto-update bootstrap for the SingularityMC launcher"

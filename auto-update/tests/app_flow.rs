@@ -46,7 +46,7 @@ use singularitymc_auto_update::{
         FlowOutcome, REPO_NAME, REPO_OWNER, RunUpdateFlowConfig, UserAction,
         run_update_flow_with_config,
     },
-    manifest::{self, Manifest},
+    manifest::Manifest,
     ui::states::UiState,
 };
 use std::sync::{Arc, Mutex};
@@ -311,11 +311,18 @@ async fn happy_path_transitions_to_updated() {
     // MEDIUM #1 fix z test-quality-v1 review — content assertions per
     // bundle żeby mutation `extract_launcher_bundle ↔ extract_jre_bundle`
     // swap był łapany. make_mock_bundles uses distinct entry paths
-    // ("SingularityMC.exe" dla launcher, "bin/java.exe" dla jre), więc
-    // sprawdzenie ich ENKLAWY (launcher/ vs runtime/) weryfikuje że
-    // extract szedł do prawidłowego target.
+    // ("SingularityMC.exe" dla launcher, "bin/java.exe" dla jre FLAT).
+    //
+    // Nested runtime layout (v1.3.x refactor): RUNTIME_DIR to
+    // "launcher/runtime" (Windows) lub "launcher/lib/runtime" (Linux).
+    // Używamy stałej z updater module zamiast hardcode, żeby host-OS
+    // test-run (Windows CI, Linux CI) brał właściwy path.
+    use singularitymc_auto_update::updater as updater_consts;
     let launcher_file = install_dir.path().join("launcher/SingularityMC.exe");
-    let jre_file = install_dir.path().join("runtime/bin/java.exe");
+    let jre_file = install_dir
+        .path()
+        .join(updater_consts::RUNTIME_DIR)
+        .join("bin/java.exe");
     assert!(
         launcher_file.exists(),
         "launcher bundle content missing after extract: {}",
@@ -328,13 +335,23 @@ async fn happy_path_transitions_to_updated() {
     );
     // Cross-check: bundle content NIE wyciekł do wrong target (mutation
     // detection dla swap extract calls).
+    //  - Gdyby extract_jre_bundle szedł do install_dir/launcher/ zamiast
+    //    RUNTIME_DIR, to "bin/java.exe" flat entry landowałby w
+    //    launcher/bin/java.exe (poza sub-folderem runtime/).
+    //  - Gdyby extract_launcher_bundle szedł do RUNTIME_DIR zamiast
+    //    launcher/, to "SingularityMC.exe" entry landowałby w
+    //    RUNTIME_DIR/SingularityMC.exe.
     assert!(
         !install_dir.path().join("launcher/bin/java.exe").exists(),
-        "jre content leaked to launcher/ (extract call swapped?)"
+        "jre content leaked do launcher/ (extract call swapped lub RUNTIME_DIR bypass?)"
     );
     assert!(
-        !install_dir.path().join("runtime/SingularityMC.exe").exists(),
-        "launcher content leaked to runtime/ (extract call swapped?)"
+        !install_dir
+            .path()
+            .join(updater_consts::RUNTIME_DIR)
+            .join("SingularityMC.exe")
+            .exists(),
+        "launcher content leaked do runtime (extract call swapped?)"
     );
 
     // MEDIUM #2 fix — staging auto-update.exe.new assertion.

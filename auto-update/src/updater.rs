@@ -35,12 +35,38 @@ use std::path::Path;
 /// Subdirectory names w install_dir. Stałe żeby literały nie rozjeżdżały
 /// się między updater.rs / launcher.rs / main.rs / installer .iss.
 pub const LAUNCHER_DIR: &str = "launcher";
-pub const RUNTIME_DIR: &str = "runtime";
 pub const LAUNCHER_OLD_DIR: &str = "launcher.old";
-pub const RUNTIME_OLD_DIR: &str = "runtime.old";
+
+/// Runtime nested INSIDE `launcher/` — jpackage launcher hardcodes sibling-
+/// relative runtime lookup (Windows: `<exe_dir>/runtime/`, Linux: `<exe_dir>/
+/// ../lib/runtime/`). Fighting tego layoutu kosztuje więcej niż daje — patch
+/// do .cfg nie jest udokumentowany, junction na Windows wymaga user mode OR
+/// admin zależnie od setupu. Adoptujemy native jpackage layout.
+///
+/// **Konsekwencja dla updatów:** runtime fizycznie siedzi w `launcher/runtime/`
+/// (Win) lub `launcher/lib/runtime/` (Lin), ale logicznie jest OSOBNĄ paczką
+/// (sha256 tracking, selective download). Gdy launcher update bez JRE update —
+/// app.rs preserve'uje `launcher/{lib/,}runtime/` przed backup_launcher i
+/// restore'uje po extract (patrz `preserve_runtime` / `restore_preserved_runtime`).
+#[cfg(target_os = "windows")]
+pub const RUNTIME_DIR: &str = "launcher/runtime";
+#[cfg(target_os = "linux")]
+pub const RUNTIME_DIR: &str = "launcher/lib/runtime";
+
+#[cfg(target_os = "windows")]
+pub const RUNTIME_OLD_DIR: &str = "launcher/runtime.old";
+#[cfg(target_os = "linux")]
+pub const RUNTIME_OLD_DIR: &str = "launcher/lib/runtime.old";
+
 /// Tmp dir dla in-progress download'ów. Cleanupowany na success.
 /// Uninstaller (.iss) usuwa go jeśli został po crash.
 pub const TMP_DIR: &str = "tmp";
+
+/// Względna ścieżka (pod `tmp/`) do preserved runtime podczas launcher-only
+/// update. `preserve_runtime` przenosi `RUNTIME_DIR` tutaj zanim `backup_launcher`
+/// move'nie całe `launcher/` do `launcher.old/`, a `restore_preserved_runtime`
+/// przywraca po extract nowego launchera.
+pub const RUNTIME_PRESERVE_REL: &str = "tmp/runtime-preserve";
 
 /// Decyzja update per paczka. Pola `*_needed: bool` — skipować download
 /// gdy lokalna wersja identyczna z remote (sha256 dla launcher/jre,
@@ -150,8 +176,65 @@ fn backup_dir(install_dir: &Path, current: &str, backup: &str) -> Result<()> {
         fs::remove_dir_all(&backup_path).map_err(UpdaterError::Io)?;
     }
     if current_path.exists() {
+        // Parent of backup_path może być nested (RUNTIME_OLD_DIR = "launcher/
+        // runtime.old" → parent "launcher/"). Create_dir_all idempotent.
+        if let Some(parent) = backup_path.parent() {
+            fs::create_dir_all(parent).map_err(UpdaterError::Io)?;
+        }
         fs::rename(&current_path, &backup_path).map_err(UpdaterError::Io)?;
     }
+    Ok(())
+}
+
+/// Launcher-only update scenario: `launcher/` zawiera runtime zagnieżdżone
+/// (RUNTIME_DIR = "launcher/runtime" lub "launcher/lib/runtime"), ale
+/// launcher.tar.gz NIE zawiera runtime/ (excluded w copy-release-files.sh).
+/// Jeśli po prostu backup_launcher → extract, nowy `launcher/` nie będzie
+/// miał JRE → launcher nie wystartuje.
+///
+/// Flow preserve/restore:
+/// 1. `preserve_runtime`: mv `install_dir/<RUNTIME_DIR>` → `install_dir/
+///    tmp/runtime-preserve/` (wywołane PRZED backup_launcher)
+/// 2. `backup_launcher`: mv launcher/ → launcher.old/ (runtime już przeniesiony)
+/// 3. extract launcher.tar.gz → launcher/
+/// 4. `restore_preserved_runtime`: mv tmp/runtime-preserve/ → `install_dir/
+///    <RUNTIME_DIR>` (parent z extract już istnieje)
+///
+/// Idempotent: no-op gdy źródło nie istnieje (fresh install, JRE update
+/// path gdzie nie preserve'owaliśmy).
+pub fn preserve_runtime(install_dir: &Path, preserve_path: &Path) -> Result<()> {
+    let runtime = install_dir.join(RUNTIME_DIR);
+    if !runtime.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = preserve_path.parent() {
+        fs::create_dir_all(parent).map_err(UpdaterError::Io)?;
+    }
+    if preserve_path.exists() {
+        fs::remove_dir_all(preserve_path).map_err(UpdaterError::Io)?;
+    }
+    fs::rename(&runtime, preserve_path).map_err(UpdaterError::Io)?;
+    Ok(())
+}
+
+/// Restore preserved runtime post-launcher-extract. Idempotent — no-op gdy
+/// preserve_path nie istnieje (fresh install, brak preserve'a).
+///
+/// Gdy destination (`install_dir/<RUNTIME_DIR>`) już istnieje (np. regres
+/// extract tarballu przypadkowo include'ował runtime/) — usuwa przed move,
+/// żeby fs::rename nie fail z `AlreadyExists`.
+pub fn restore_preserved_runtime(install_dir: &Path, preserve_path: &Path) -> Result<()> {
+    if !preserve_path.exists() {
+        return Ok(());
+    }
+    let runtime = install_dir.join(RUNTIME_DIR);
+    if let Some(parent) = runtime.parent() {
+        fs::create_dir_all(parent).map_err(UpdaterError::Io)?;
+    }
+    if runtime.exists() {
+        fs::remove_dir_all(&runtime).map_err(UpdaterError::Io)?;
+    }
+    fs::rename(preserve_path, &runtime).map_err(UpdaterError::Io)?;
     Ok(())
 }
 
@@ -204,10 +287,22 @@ pub fn extract_launcher_bundle(tmp_archive: &Path, install_dir: &Path) -> Result
     extract_tar_gz(tmp_archive, &target)
 }
 
-/// Extract jre bundle tar.gz z `tmp/jre-<os>.tar.gz` do
-/// `install_dir/runtime/`. Analogiczne do `extract_launcher_bundle`.
+/// Extract jre bundle tar.gz z `tmp/jre-<os>.tar.gz` do nested `RUNTIME_DIR`
+/// (Windows: `launcher/runtime/`, Linux: `launcher/lib/runtime/`).
+///
+/// Tarball layout: FLAT — `bin/java.exe`, `conf/`, `lib/`, `release` bez
+/// `runtime/` prefix (copy-release-files.sh używa `tar -C $RUNTIME_SRC .`).
+/// Extract do RUNTIME_DIR daje `install_dir/launcher/runtime/bin/java.exe`.
+/// Parent RUNTIME_DIR (`launcher/` lub `launcher/lib/`) musi istnieć — caller
+/// odpowiedzialny (typowo extract launcher tarball poprzedza ten call; fresh
+/// install path tworzy launcher/ przez extract_launcher_bundle).
 pub fn extract_jre_bundle(tmp_archive: &Path, install_dir: &Path) -> Result<()> {
     let target = install_dir.join(RUNTIME_DIR);
+    // Parent RUNTIME_DIR może jeszcze nie istnieć jeśli JRE-only update na
+    // świeżym install_dir (bez launcher/). Tworzymy chain.
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(UpdaterError::Io)?;
+    }
     extract_tar_gz(tmp_archive, &target)
 }
 
@@ -431,7 +526,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         let install = tmp.path();
         let runtime = install.join(RUNTIME_DIR);
-        fs::create_dir(&runtime).unwrap();
+        // RUNTIME_DIR zagnieżdżone ("launcher/runtime" lub "launcher/lib/
+        // runtime") — parent musi istnieć przed write.
+        fs::create_dir_all(&runtime).unwrap();
         fs::write(runtime.join("jvm.dll"), b"original-jvm").unwrap();
 
         backup_runtime(install).unwrap();
@@ -487,7 +584,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         let install = tmp.path();
         fs::create_dir(install.join(LAUNCHER_OLD_DIR)).unwrap();
-        fs::create_dir(install.join(RUNTIME_OLD_DIR)).unwrap();
+        // RUNTIME_OLD_DIR jest zagnieżdżony (`launcher/runtime.old` lub
+        // `launcher/lib/runtime.old`) — create_dir_all dla chained parents.
+        fs::create_dir_all(install.join(RUNTIME_OLD_DIR)).unwrap();
 
         cleanup_backups(install).unwrap();
         assert!(!install.join(LAUNCHER_OLD_DIR).exists());
@@ -508,6 +607,82 @@ mod tests {
 
         cleanup_backups(install).unwrap();
         assert!(!install.join(LAUNCHER_OLD_DIR).exists());
+    }
+
+    // --- preserve_runtime / restore_preserved_runtime ---
+
+    #[test]
+    fn preserve_and_restore_runtime_round_trip() {
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        let runtime = install.join(RUNTIME_DIR);
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(runtime.join("java.marker"), b"original-jre").unwrap();
+
+        let preserve = install.join(RUNTIME_PRESERVE_REL);
+        preserve_runtime(install, &preserve).unwrap();
+
+        // Po preserve: runtime path pusty, preserve_path ma content.
+        assert!(!runtime.exists(), "runtime path powinien być przeniesiony");
+        assert!(
+            preserve.join("java.marker").exists(),
+            "content powinien być w preserve_path"
+        );
+
+        // Simulate launcher extract: parent RUNTIME_DIR pojawia się (launcher/
+        // lub launcher/lib/). restore_preserved_runtime tworzy RUNTIME_DIR i
+        // wrzuca content z preserve.
+        restore_preserved_runtime(install, &preserve).unwrap();
+        assert_eq!(
+            fs::read(runtime.join("java.marker")).unwrap(),
+            b"original-jre",
+            "preserved runtime powinien być restored dokładnie"
+        );
+        assert!(!preserve.exists(), "preserve path powinien być zużyty");
+    }
+
+    #[test]
+    fn preserve_runtime_no_op_when_runtime_missing() {
+        // Fresh install path: nie ma runtime → preserve to no-op, preserve_path
+        // nie powstaje.
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        let preserve = install.join(RUNTIME_PRESERVE_REL);
+
+        preserve_runtime(install, &preserve).unwrap();
+        assert!(!preserve.exists(), "preserve_path nie powinien powstać bez źródła");
+    }
+
+    #[test]
+    fn restore_preserved_runtime_no_op_when_preserve_missing() {
+        // Normal flow bez preserve'a (JRE update path) — restore powinien
+        // być idempotent no-op.
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        let preserve = install.join(RUNTIME_PRESERVE_REL);
+
+        restore_preserved_runtime(install, &preserve).unwrap();
+        assert!(!install.join(RUNTIME_DIR).exists());
+    }
+
+    #[test]
+    fn restore_preserved_runtime_overwrites_existing_destination() {
+        // Edge case: new launcher tarball niespodziewanie zawiera runtime/
+        // (regres build config). Restore powinien nadpisać a nie fail z
+        // AlreadyExists (fs::rename wymagałoby clean target).
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        let runtime = install.join(RUNTIME_DIR);
+        let preserve = install.join(RUNTIME_PRESERVE_REL);
+
+        fs::create_dir_all(&preserve).unwrap();
+        fs::write(preserve.join("preserved.bin"), b"preserved").unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(runtime.join("unexpected.bin"), b"from-extract").unwrap();
+
+        restore_preserved_runtime(install, &preserve).unwrap();
+        assert!(runtime.join("preserved.bin").exists());
+        assert!(!runtime.join("unexpected.bin").exists());
     }
 
     #[test]
@@ -555,13 +730,21 @@ mod tests {
 
     #[test]
     fn perform_launcher_rollback_rolls_back_both_when_present() {
+        // Simulate realistic post-backup state gdzie backup_runtime był
+        // wywołany PRZED backup_launcher:
+        //   1. mv launcher/runtime → launcher/runtime.old (backup_runtime)
+        //   2. mv launcher → launcher.old (backup_launcher, bierze runtime.old w sobie)
+        // Result: launcher.old/ + launcher.old/runtime.old/ (zagnieżdżone).
         let tmp = tempdir().unwrap();
         let install = tmp.path();
-        // Setup: .old dirs present (simulate backup taken)
         fs::create_dir(install.join(LAUNCHER_OLD_DIR)).unwrap();
         fs::write(install.join(LAUNCHER_OLD_DIR).join("a.txt"), b"launcher-old").unwrap();
-        fs::create_dir(install.join(RUNTIME_OLD_DIR)).unwrap();
-        fs::write(install.join(RUNTIME_OLD_DIR).join("b.txt"), b"runtime-old").unwrap();
+        // runtime.old zagnieżdżony W launcher.old/ — matches post-backup layout.
+        // Używamy raw path bo RUNTIME_OLD_DIR = "launcher/runtime.old" odnosi
+        // się do POST-rollback state, nie POST-backup.
+        let runtime_old_in_launcher_old = install.join(LAUNCHER_OLD_DIR).join("runtime.old");
+        fs::create_dir(&runtime_old_in_launcher_old).unwrap();
+        fs::write(runtime_old_in_launcher_old.join("b.txt"), b"runtime-old").unwrap();
 
         perform_launcher_rollback(install).unwrap();
 
@@ -577,10 +760,10 @@ mod tests {
 
     #[test]
     fn perform_launcher_rollback_tolerates_missing_runtime_old() {
-        // Scenariusz: ostatni update pobierał tylko launcher (jre sha
-        // unchanged), więc runtime.old/ nie był tworzony. Crash counter
-        // rollback powinien jednak rollbackować launcher bez fail
-        // na brakujące runtime backup.
+        // Scenariusz: ostatni update pobierał tylko launcher + preserved
+        // runtime został przywrócony bezpośrednio do RUNTIME_DIR (bez
+        // tworzenia runtime.old), więc rollback path widzi samo launcher.old/.
+        // perform_launcher_rollback powinien rollbackować launcher bez fail.
         let tmp = tempdir().unwrap();
         let install = tmp.path();
         fs::create_dir(install.join(LAUNCHER_OLD_DIR)).unwrap();

@@ -809,14 +809,45 @@ async fn process_release(
     // --- Install phase ---
     set_state(&state, UiState::Installing);
 
+    // Preserve runtime jeśli launcher-only update (jre unchanged). Runtime
+    // fizycznie siedzi w `launcher/runtime/` (Windows) lub `launcher/lib/
+    // runtime/` (Linux) — jpackage native layout. Bez preserve'a
+    // backup_launcher przeniósłby go do launcher.old/, a nowa launcher.tar.gz
+    // (excludes runtime/) pozostawiłaby install bez JRE → launcher fail.
+    // Flow: mv RUNTIME_DIR → tmp/runtime-preserve (przed backup_launcher),
+    //       extract launcher, mv runtime-preserve → RUNTIME_DIR (po extract).
+    let preserve_path = install_dir.join(updater::RUNTIME_PRESERVE_REL);
+    let needs_runtime_preserve = decision.launcher_needed && !decision.jre_needed;
+    if needs_runtime_preserve {
+        updater::preserve_runtime(&install_dir, &preserve_path)?;
+    }
+
     // Backup aktualnych instalacji (rename do .old/) przed extract, żeby
     // crash counter mógł rollback. Tylko dla paczek które faktycznie
-    // pobieramy — jeśli jre nie zmieniło się, zostawiamy runtime/ w miejscu.
-    if decision.launcher_needed {
-        updater::backup_launcher(&install_dir)?;
-    }
+    // pobieramy.
+    //
+    // KOLEJNOŚĆ KRYTYCZNA: backup_runtime MUSI być przed backup_launcher.
+    // RUNTIME_DIR = "launcher/runtime" (zagnieżdżony), więc:
+    //   1. backup_runtime najpierw: mv launcher/runtime → launcher/runtime.old
+    //      (wciąż wewnątrz launcher/).
+    //   2. backup_launcher: mv launcher → launcher.old (zabiera ze sobą
+    //      runtime.old zagnieżdżony w środku).
+    // Wynik: launcher.old/ + launcher.old/runtime.old/. Po rollback_launcher
+    // (mv launcher.old → launcher) state zostaje symetryczny: launcher/
+    // + launcher/runtime.old/, co matches RUNTIME_OLD_DIR stałą i pozwala
+    // rollback_runtime na poprawne przywrócenie runtime.
+    // Odwrócona kolejność (backup_launcher najpierw) skutkowałaby no-op
+    // backup_runtime bo po move launcher/ do launcher.old/ path launcher/
+    // runtime nie istnieje.
+    //
+    // Fresh install path (both needed) trafia preserve branch (no-op bo
+    // runtime nie istnieje), backup_runtime (no-op), backup_launcher (no-op
+    // bo launcher nie istnieje). Wszystkie branches bezpieczne.
     if decision.jre_needed {
         updater::backup_runtime(&install_dir)?;
+    }
+    if decision.launcher_needed {
+        updater::backup_launcher(&install_dir)?;
     }
 
     // Extract phase z auto-rollback na partial fail. Tar::Archive::unpack()
@@ -848,22 +879,34 @@ async fn process_release(
                 _ => unreachable!("unexpected download target: {name}"),
             }
         }
+        // Launcher extract dopiero co stworzył RUNTIME_DIR parent (launcher/
+        // lub launcher/lib/) — teraz restore'ujemy preserved runtime pod
+        // nested RUNTIME_DIR path. Jeśli nie było preserve'a (fresh install,
+        // JRE update path), funkcja jest no-op.
+        if needs_runtime_preserve {
+            updater::restore_preserved_runtime(&install_dir, &preserve_path)?;
+        }
         Ok(())
     })();
 
     if let Err(e) = extract_result {
         log::warn!("extract failed ({e}); auto-rolling back to .old/ backups");
-        // Cleanup partial content z each target. Rollback restored state
-        // z .old/ siblings jeśli istnieją (backup_launcher/runtime było
-        // wywołane warunkowo per decision.needed; tu tolerate missing).
-        let _ = updater::cleanup_partial_extract(&install_dir, updater::LAUNCHER_DIR);
-        let _ = updater::cleanup_partial_extract(&install_dir, updater::RUNTIME_DIR);
+        // UWAGA: NIE wywołujemy cleanup_partial_extract(LAUNCHER_DIR) tutaj.
+        // W JRE-only update path backup_runtime zostawił launcher/runtime.old
+        // ZAGNIEŻDŻONY w launcher/, więc cały launcher/ NIE może być
+        // nuked — zniszczyłoby backup. rollback_launcher / rollback_runtime
+        // same czyszczą swoje current_path (fs::remove_dir_all przed rename)
+        // więc redundancja to też risk.
         if install_dir.join(updater::LAUNCHER_OLD_DIR).exists() {
             let _ = updater::rollback_launcher(&install_dir);
         }
         if install_dir.join(updater::RUNTIME_OLD_DIR).exists() {
             let _ = updater::rollback_runtime(&install_dir);
         }
+        // Preserve'owany runtime (launcher-only path) — restore z tmp/runtime-
+        // preserve/ do RUNTIME_DIR. Idempotent no-op gdy preserve nie było
+        // (JRE-only, both, fresh install).
+        let _ = updater::restore_preserved_runtime(&install_dir, &preserve_path);
         return Err(e);
     }
 
