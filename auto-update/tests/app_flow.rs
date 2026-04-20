@@ -192,8 +192,8 @@ async fn mount_bundles_and_build_manifest(
 /// Legacy `manifest_json` helper dla testów które potrzebują tylko
 /// minimal manifest (np. minAutoUpdateVersion gate, malformed JSON tests).
 /// Zero sha256 — nie konsumowane w tych scenariuszach bo early-exit
-/// przed download.
-#[allow(dead_code)]
+/// przed download. Używany przez `manifest_parse_error_short_circuits_to_fatal`
+/// (line 940) + `exhausted_retries_with_local_manifest_offers_offline` (1014).
 fn manifest_json(version: &str, files: &[(&str, &str, u64, &str)]) -> String {
     let launcher_rel = files
         .first()
@@ -296,6 +296,60 @@ async fn happy_path_transitions_to_updated() {
         }
         other => panic!("expected Updated(launcher/SingularityMC.exe), got {other:?}"),
     }
+
+    // MEDIUM #1 fix z test-quality-v1 review — content assertions per
+    // bundle żeby mutation `extract_launcher_bundle ↔ extract_jre_bundle`
+    // swap był łapany. make_mock_bundles uses distinct entry paths
+    // ("SingularityMC.exe" dla launcher, "bin/java.exe" dla jre), więc
+    // sprawdzenie ich ENKLAWY (launcher/ vs runtime/) weryfikuje że
+    // extract szedł do prawidłowego target.
+    let launcher_file = install_dir.path().join("launcher/SingularityMC.exe");
+    let jre_file = install_dir.path().join("runtime/bin/java.exe");
+    assert!(
+        launcher_file.exists(),
+        "launcher bundle content missing after extract: {}",
+        launcher_file.display()
+    );
+    assert!(
+        jre_file.exists(),
+        "jre bundle content missing after extract: {}",
+        jre_file.display()
+    );
+    // Cross-check: bundle content NIE wyciekł do wrong target (mutation
+    // detection dla swap extract calls).
+    assert!(
+        !install_dir.path().join("launcher/bin/java.exe").exists(),
+        "jre content leaked to launcher/ (extract call swapped?)"
+    );
+    assert!(
+        !install_dir.path().join("runtime/SingularityMC.exe").exists(),
+        "launcher content leaked to runtime/ (extract call swapped?)"
+    );
+
+    // MEDIUM #2 fix — staging auto-update.exe.new assertion.
+    // self_update::pending_path(current_exe) = current_exe + ".new".
+    // W teście current_exe = test-runner binary — pending_path zapisuje
+    // tam. Verify plik powstał (mutation detection dla remove fs::copy call).
+    // Cleanup post-assert żeby nie wpływać na inne testy w tym samym
+    // test-runner binary.
+    let current_exe = std::env::current_exe().unwrap();
+    let pending = current_exe
+        .parent()
+        .unwrap()
+        .join(format!("{}.new", current_exe.file_name().unwrap().to_string_lossy()));
+    assert!(
+        pending.exists(),
+        "staged auto-update binary missing at {}",
+        pending.display()
+    );
+    let _ = std::fs::remove_file(&pending);
+
+    // local-manifest.json powinien być zapisany post-update.
+    let local_mf = install_dir.path().join("local-manifest.json");
+    assert!(
+        local_mf.exists(),
+        "local-manifest.json not written after update"
+    );
 
     // Positive terminal-pre-main state: `process_release` leaves state
     // on `Installing` before returning Ok (it's the last `set_state`

@@ -36,6 +36,33 @@ jobs:
           unzip -p singularity-agent/build/libs/singularity-agent.jar META-INF/MANIFEST.MF | grep "Premain-Class"
         shell: bash
 
+      # Rust auto-update test suite — krytyczny gate przed merge do main.
+      # Bez tego regresja w auto-update (bundle flow, manifest schema,
+      # self_update) wchodzi niewykryta aż do tag push release.yml.
+      # test-quality-v1 review 2026-04-20 flagował jako CRITICAL gap.
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo (auto-update)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            auto-update/target
+          key: cargo-ci-${{ hashFiles('auto-update/Cargo.toml', 'auto-update/Cargo.lock') }}
+
+      - name: Cargo test auto-update
+        working-directory: auto-update
+        run: cargo test --all-targets --locked
+        shell: bash
+
+      # Shell scripts lint — catches SC2086 (unquoted vars), SC2164 (unsafe cd),
+      # i inne bash footguns. Zapobiega silent fails w release.yml / AppRun.
+      - name: Shellcheck
+        run: shellcheck installer/AppRun scripts/*.sh
+        shell: bash
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: always()
