@@ -139,17 +139,22 @@ fn make_mock_bundles() -> MockBundles {
     }
 }
 
+/// Manifest configuration — named fields zamiast 4-positional args
+/// (per type-design-v1 P2 feedback, redukuje positional-swap errors).
+struct ManifestConfig<'a> {
+    version: &'a str,
+    launcher_exe: &'a str,
+    au_version: &'a str,
+    min_auto_update_version: &'a str,
+}
+
 /// Mount wiremock endpoints dla 3 bundles + build matching manifest JSON.
 /// Zwraca manifest JSON string (test mountuje go pod /download/manifest-<os>.json).
 /// Async bo wiremock `.mount()` jest async.
-#[allow(clippy::too_many_arguments)]
 async fn mount_bundles_and_build_manifest(
     server: &MockServer,
     bundles: &MockBundles,
-    version: &str,
-    launcher_exe: &str,
-    au_version: &str,
-    min_auto_update_version: &str,
+    cfg: ManifestConfig<'_>,
 ) -> String {
     let launcher_url = format!("{}/download/launcher-windows.tar.gz", server.uri());
     let jre_url = format!("{}/download/jre-windows.tar.gz", server.uri());
@@ -174,18 +179,22 @@ async fn mount_bundles_and_build_manifest(
     format!(
         r#"{{
             "version":"{version}","os":"windows","releasedAt":"2026-04-15T10:00:00Z",
-            "minAutoUpdateVersion":"{min_auto_update_version}","launcherExecutable":"{launcher_exe}",
+            "minAutoUpdateVersion":"{min_au_v}","launcherExecutable":"{launcher_exe}",
             "changelog":"- test",
-            "launcher":{{"url":"{launcher_url}","sha256":"{}","size":{}}},
-            "jre":{{"url":"{jre_url}","sha256":"{}","size":{}}},
-            "autoUpdate":{{"url":"{au_url}","sha256":"{}","size":{},"version":"{au_version}"}}
+            "launcher":{{"url":"{launcher_url}","sha256":"{launcher_sha}","size":{launcher_size}}},
+            "jre":{{"url":"{jre_url}","sha256":"{jre_sha}","size":{jre_size}}},
+            "autoUpdate":{{"url":"{au_url}","sha256":"{au_sha}","size":{au_size},"version":"{au_version}"}}
         }}"#,
-        bundles.launcher_sha,
-        bundles.launcher_tar.len(),
-        bundles.jre_sha,
-        bundles.jre_tar.len(),
-        bundles.au_sha,
-        bundles.au_bin.len(),
+        version = cfg.version,
+        min_au_v = cfg.min_auto_update_version,
+        launcher_exe = cfg.launcher_exe,
+        au_version = cfg.au_version,
+        launcher_sha = bundles.launcher_sha,
+        launcher_size = bundles.launcher_tar.len(),
+        jre_sha = bundles.jre_sha,
+        jre_size = bundles.jre_tar.len(),
+        au_sha = bundles.au_sha,
+        au_size = bundles.au_bin.len(),
     )
 }
 
@@ -258,10 +267,12 @@ async fn happy_path_transitions_to_updated() {
     let m_json = mount_bundles_and_build_manifest(
         &server,
         &bundles,
-        "0.1.0",
-        "launcher/SingularityMC.exe",
-        "1.0.0",
-        "0.1.0",
+        ManifestConfig {
+            version: "0.1.0",
+            launcher_exe: "launcher/SingularityMC.exe",
+            au_version: "1.0.0",
+            min_auto_update_version: "0.1.0",
+        },
     )
     .await;
     Mock::given(method("GET"))
@@ -597,10 +608,12 @@ async fn api_auto_retries_on_second_tick_after_first_failure() {
     let m_json = mount_bundles_and_build_manifest(
         &server,
         &bundles,
-        "0.1.0",
-        "launcher/SingularityMC.exe",
-        "1.0.0",
-        "0.1.0",
+        ManifestConfig {
+            version: "0.1.0",
+            launcher_exe: "launcher/SingularityMC.exe",
+            au_version: "1.0.0",
+            min_auto_update_version: "0.1.0",
+        },
     )
     .await;
     Mock::given(method("GET"))
@@ -1246,10 +1259,12 @@ async fn temp_dir_pre_clean_wipes_stale_content_on_entry() {
     let m_json = mount_bundles_and_build_manifest(
         &server,
         &bundles,
-        "0.1.0",
-        "launcher/SingularityMC.exe",
-        "1.0.0",
-        "0.1.0",
+        ManifestConfig {
+            version: "0.1.0",
+            launcher_exe: "launcher/SingularityMC.exe",
+            au_version: "1.0.0",
+            min_auto_update_version: "0.1.0",
+        },
     )
     .await;
     Mock::given(method("GET"))

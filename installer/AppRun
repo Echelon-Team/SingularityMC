@@ -18,10 +18,16 @@
 #
 # URL hardcoded (immutable) per project_release_asset_naming_immutable.
 
-set -eu
+# -o pipefail defense-in-depth. Obecnie AppRun nie ma pipes ale dodanie
+# zero kosztowe, chroni przyszłe edycje (per silent-failure-v1 NIT).
+set -euo pipefail
 
 AUTO_UPDATE_URL="https://github.com/Echelon-Team/SingularityMC/releases/latest/download/auto-update-linux"
-INSTALL_DIR="${HOME}/.local/share/SingularityMC"
+# ${HOME:?} wymusza że HOME jest USTAWIONY i NIEPUSTY. systemd-service
+# context może mieć HOME="" (unset + empty string edge case) — bez ? HOME=""
+# robi INSTALL_DIR="/.local/share/SingularityMC" (root-owned path), mkdir -p
+# failuje z permission denied. ${HOME:?} exit z jasnym message.
+INSTALL_DIR="${HOME:?HOME environment variable must be set}/.local/share/SingularityMC"
 AUTO_UPDATE_BIN="${INSTALL_DIR}/auto-update"
 
 mkdir -p "$INSTALL_DIR"
@@ -49,7 +55,13 @@ if [ ! -x "$AUTO_UPDATE_BIN" ]; then
         echo "Zainstaluj jedno z nich (np. 'sudo apt install curl') i spróbuj ponownie." >&2
         exit 1
     fi
-    chmod +x "$AUTO_UPDATE_BIN"
+    # chmod error context — bez tego set -e exit z cryptic default "chmod:
+    # cannot ..." bez wskazówki że to instalacja fail.
+    if ! chmod +x "$AUTO_UPDATE_BIN"; then
+        echo "Błąd: nie można ustawić uprawnień wykonania na $AUTO_UPDATE_BIN" >&2
+        echo "Sprawdź czy dysk nie jest read-only i czy masz dostęp do $INSTALL_DIR" >&2
+        exit 1
+    fi
     echo "Pobieranie zakończone. Uruchamianie SingularityMC..."
 fi
 

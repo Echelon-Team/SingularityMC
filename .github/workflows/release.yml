@@ -308,7 +308,11 @@ jobs:
           du -sh release/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        # Pin @v2.6.2 per web-research-v1 2026-04-20 — v3.0.0 wymaga Node 24
+        # (nie default na ubuntu-22.04 runnerach). v2.6.2 to last Node 20
+        # compatible, stable dla naszego use case (~10 assetów total, pokrywa
+        # secondary rate limit comfort zone).
+        uses: softprops/action-gh-release@v2.6.2
         with:
           files: release/*
           prerelease: ${{ env.IS_PRERELEASE }}
