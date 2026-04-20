@@ -53,9 +53,9 @@ if [ ! -x "$AUTO_UPDATE_BIN" ]; then
     echo "Pobieranie zakończone. Uruchamianie SingularityMC..."
 fi
 
-# SINGULARITY_INSTALL_DIR env var propagowana do auto-update i launcher
-# (spec §6.1 — install_dir jest read parent z current_exe Windows side,
-# ale na Linux AppImage uruchamiany z AppImage mount, więc auto-update
-# nie umie wyderivować go sam).
-export SINGULARITY_INSTALL_DIR="$INSTALL_DIR"
+# exec: replaces AppRun process z auto-update. `$AUTO_UPDATE_BIN` wskazuje
+# na downloaded path (`~/.local/share/SingularityMC/auto-update`), nie na
+# AppImage mount, więc `current_exe().parent()` w Rust (main.rs:80) zwróci
+# poprawny install_dir. Nie potrzeba env var propagation — derivacja z
+# current_exe jest idempotent między Windows i Linux.
 exec "$AUTO_UPDATE_BIN" "$@"
