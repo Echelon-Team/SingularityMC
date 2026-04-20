@@ -1,31 +1,36 @@
 #!/usr/bin/env kotlin
 //
-// Generuje manifest per-OS dla Phase 3 release flow.
+// Generuje manifest per-OS dla 3-package release flow (v1.2.x+).
 //
 // Usage:
-//   kotlin scripts/generate-manifest.main.kts <launcherDir> <osSuffix> <version> <outputPath>
+//   kotlin scripts/generate-manifest.main.kts \
+//       <launcherTarGz> <jreTarGz> <autoUpdateBin> \
+//       <osSuffix> <version> <autoUpdateVersion> \
+//       <outputPath>
 //
-//   <launcherDir>  — ścieżka do unpacked Compose Desktop output,
-//                    np. `singularity-launcher/build/compose/binaries/main/app/SingularityMC`
-//   <osSuffix>     — `windows` lub `linux`
-//   <version>      — semver bez prefiksu `v`, np. `1.2.3`
-//   <outputPath>   — gdzie zapisać manifest.json
+//   <launcherTarGz>    — path do launcher-<os>.tar.gz (size + sha256 liczony)
+//   <jreTarGz>         — path do jre-<os>.tar.gz
+//   <autoUpdateBin>    — path do auto-update-<os>.exe (Windows) / auto-update-<os> (Linux)
+//   <osSuffix>         — "windows" lub "linux"
+//   <version>          — release tag bez prefiksu v (np. "0.4.7")
+//   <autoUpdateVersion>— z `auto-update/Cargo.toml [package].version` (np. "1.2.4")
+//   <outputPath>       — gdzie zapisać manifest-<os>.json
 //
 // Output matches `auto-update/src/manifest.rs::Manifest` Serde schema —
-// camelCase fields, zwalidowany ManifestPath (no traversal, forward slashes).
-// Zmiany schema MUSZĄ być w sync między Rust struct + ten script + Phase 1
-// launcher news feed parser.
+// camelCase fields, walidowane Sha256 (64 lowercase hex), ManifestPath
+// (no traversal). Zmiany schema MUSZĄ być w sync między Rust struct +
+// ten script.
 //
-// Wołane z `.github/workflows/release.yml` (Task 3.3) dla każdego OS
-// w matrix. Wynikowy JSON + każdy tracked plik ląduje w GitHub Release
-// assets pod URL `https://github.com/Echelon-Team/SingularityMC/releases/download/v$VERSION/<filename>`.
+// **Asset naming jest IMMUTABLE** (patrz memory rule
+// `project_release_asset_naming_immutable`): `launcher-<os>.tar.gz`,
+// `jre-<os>.tar.gz`, `auto-update-<os>[.exe]`, `manifest-<os>.json` —
+// hardcoded w installer Pascal. Zmiana nazwy = dead installer hash =
+// reset SmartScreen reputation.
 
 @file:DependsOn("org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.6.3")
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.nio.file.Files
@@ -33,133 +38,130 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.security.MessageDigest
 import java.time.Instant
-import kotlin.streams.toList
 
 // Script NIE używa @Serializable data classes — `.main.kts` CLI runtime
 // nie ma kotlinx-serialization compiler plugin loadowanego, więc reflective
 // `encodeToString(manifest)` z @Serializable data class wybucha
 // `SerializationException: Serializer for class 'Manifest' is not found`
-// (verified w CI run #24613106653). `buildJsonObject` + `buildJsonArray`
-// DSL działa bez plugin — operuje na kotlinx-serialization-json primitives
-// bez potrzeby compile-time-generated serializers.
+// (verified w CI run #24613106653). `buildJsonObject` DSL działa bez
+// plugin — operuje na kotlinx-serialization-json primitives bez potrzeby
+// compile-time-generated serializers.
 
-if (args.size < 4) {
-    System.err.println("Usage: generate-manifest.main.kts <launcherDir> <osSuffix> <version> <outputPath>")
-    System.err.println("Example: generate-manifest.main.kts singularity-launcher/build/compose/binaries/main/app/SingularityMC windows 1.2.3 manifest-windows.json")
+if (args.size < 7) {
+    System.err.println(
+        """
+        Usage: generate-manifest.main.kts <launcherTarGz> <jreTarGz> <autoUpdateBin>
+                                          <osSuffix> <version> <autoUpdateVersion>
+                                          <outputPath>
+        """.trimIndent()
+    )
     kotlin.system.exitProcess(1)
 }
 
-val launcherDir = Paths.get(args[0]).toAbsolutePath().normalize()
-val osSuffix = args[1]
-val version = args[2]
-val outputPath = Paths.get(args[3])
+val launcherTarGz = Paths.get(args[0]).toAbsolutePath()
+val jreTarGz = Paths.get(args[1]).toAbsolutePath()
+val autoUpdateBin = Paths.get(args[2]).toAbsolutePath()
+val osSuffix = args[3]
+val version = args[4]
+val autoUpdateVersion = args[5]
+val outputPath = Paths.get(args[6])
 
-require(Files.isDirectory(launcherDir)) { "launcherDir nie istnieje lub nie jest katalogiem: $launcherDir" }
-require(osSuffix in setOf("windows", "linux")) { "osSuffix musi być 'windows' lub 'linux', dostał: $osSuffix" }
-require(version.isNotBlank()) { "version nie może być pusty" }
+require(Files.isRegularFile(launcherTarGz)) { "launcher.tar.gz missing: $launcherTarGz" }
+require(Files.isRegularFile(jreTarGz)) { "jre-$osSuffix.tar.gz missing: $jreTarGz" }
+require(Files.isRegularFile(autoUpdateBin)) { "auto-update binary missing: $autoUpdateBin" }
+require(osSuffix in setOf("windows", "linux")) { "osSuffix must be 'windows' or 'linux', got: $osSuffix" }
+require(version.isNotBlank()) { "version must not be blank" }
+require(autoUpdateVersion.isNotBlank()) { "autoUpdateVersion must not be blank" }
 
-// Base URL dla GitHub Release assets. Rezerwowany prefix — rzeczywiste
-// pliki uploadowane są z prefiksami `$osSuffix-` dla OS-specific,
-// surowymi nazwami dla shared.
 val repoBaseUrl = "https://github.com/Echelon-Team/SingularityMC/releases/download/v$version"
 
-// Plain data carriers — bez @Serializable. Konwersja do JsonObject
-// odbywa się w `fileEntry` / bloku budowania manifestu niżej.
-data class FileEntry(
-    val path: String,
-    val url: String,
-    val size: Long,
-    val sha256: String,
-)
-
+/**
+ * Streaming SHA-256 dla pliku. 64 KB buffer per web-research-v1 analysis:
+ * - tar-rs czyta 512-byte tar frame headers + chunked file body
+ * - jvm I/O syscall overhead: 4 KB default = 7680 iteracji per 30 MB,
+ *   64 KB = 469 iteracji. CPU bottleneck (SHA compute ~300 MB/s single-core)
+ *   dominuje ale buffer size wpływa na syscall overhead.
+ * - File.forEachBlock(blockSize=65536) — stdlib helper z auto-close +
+ *   deterministic kolejność chunków.
+ */
 fun sha256(path: Path): String {
     val md = MessageDigest.getInstance("SHA-256")
-    Files.newInputStream(path).use { input ->
-        val buf = ByteArray(64 * 1024)
-        while (true) {
-            val n = input.read(buf)
-            if (n < 0) break
-            md.update(buf, 0, n)
-        }
+    path.toFile().forEachBlock(blockSize = 64 * 1024) { buffer, bytesRead ->
+        md.update(buffer, 0, bytesRead)
     }
     return md.digest().joinToString("") { "%02x".format(it) }
 }
 
-// OS-specific vs shared classification. Shared pliki (w `/app/`) są
-// cross-platform JARs — jeden asset w GitHub Release starczy dla obu
-// OSach. OS-specific (executables, `/runtime/` = bundled JRE) dostają
-// `$osSuffix-` prefix w nazwie assetu, osobne per OS.
-fun isOsSpecific(relPath: String): Boolean {
-    return relPath.endsWith(".exe") ||
-        relPath.contains("/runtime/") ||
-        !relPath.endsWith(".jar") && !relPath.endsWith(".cfg") && !relPath.contains("/app/")
-}
-
-fun fileEntry(p: Path): FileEntry {
-    // Rel path starts `launcher/...` (launcherDir.parent = `app`,
-    // launcherDir = `app/SingularityMC`; relativize z parent daje
-    // "SingularityMC/..." po czym przepisujemy na "launcher/..." niżej).
-    val parent = launcherDir.parent
-        ?: error("launcherDir nie ma parent — podaj pełną ścieżkę do app/<appName>")
-    val relFromParent = parent.relativize(p).toString().replace('\\', '/')
-    // Zamień pierwszą komponentę na `launcher` — auto-update state
-    // machine zakłada install_dir/launcher/ dla plików launcher-a.
-    val relPath = relFromParent.replaceFirst(Regex("^[^/]+"), "launcher")
-    val fileName = p.fileName.toString()
-    val assetName = if (isOsSpecific(relPath)) "$osSuffix-$fileName" else fileName
-    return FileEntry(
-        path = relPath,
-        url = "$repoBaseUrl/$assetName",
-        size = Files.size(p),
-        sha256 = sha256(p),
-    )
-}
-
-val files = Files.walk(launcherDir).use { stream ->
-    stream.filter { Files.isRegularFile(it) }.toList()
-}.map { fileEntry(it) }
-
+// Launcher executable relative path w install_dir. Windows: jpackage
+// produkuje `SingularityMC.exe` w root folderze aplikacji (nie bin/).
+// Linux: binary idzie do bin/SingularityMC. Rust auto-update używa tego
+// dla `launcher::spawn` po extract.
 val launcherExecutable = when (osSuffix) {
     "windows" -> "launcher/SingularityMC.exe"
-    "linux" -> "launcher/bin/SingularityMC"  // Compose Desktop umieszcza Linux binary w bin/
-    else -> error("Unknown osSuffix: $osSuffix")
+    "linux" -> "launcher/bin/SingularityMC"
+    else -> error("unreachable (require check above)")
+}
+
+// Asset names — IMMUTABLE convention per memory rule
+// `project_release_asset_naming_immutable`. Hardcoded w installer Pascal
+// i bootstrap AppRun shell — zmiana tutaj = zmiana URL w manifest = dead
+// linki u wszystkich obecnie zainstalowanych userów.
+val launcherAssetName = "launcher-$osSuffix.tar.gz"
+val jreAssetName = "jre-$osSuffix.tar.gz"
+val autoUpdateAssetName = when (osSuffix) {
+    "windows" -> "auto-update-windows.exe"
+    "linux" -> "auto-update-linux"
+    else -> error("unreachable")
 }
 
 // Changelog pulling: env var RELEASE_CHANGELOG (CI wstrzykuje z tag
 // annotation / release notes), fallback na generic line.
 val changelog = System.getenv("RELEASE_CHANGELOG") ?: "- Update to version $version"
 
-// Bezpośrednio buduj JsonObject reprezentujący manifest. Pola zachowują
-// camelCase match ze schematem `auto-update/src/manifest.rs::Manifest`
-// (`#[serde(rename_all = "camelCase")]`). Kolejność pól wynikowego JSON
-// ma być identyczna jak w Rust struct: version, os, releasedAt,
-// minAutoUpdateVersion, launcherExecutable, changelog, files.
+// Min auto-update version który rozumie ten manifest schema. Bump major
+// component gdy Rust Manifest struct shape się zmienia w incompatible way
+// (np. dodajemy required field). `1.0.0` bo v1.x line wszystko jest
+// backward-compatible serde (optional fields z #[serde(default)]).
+val minAutoUpdateVersion = "1.0.0"
+
+// Files.size(Path) zwraca non-null Long per web-research. Explicit Long
+// declaration wymusza Kotlin type inference do JsonPrimitive::Long (nie
+// Number/Any). Bez tego DSL może silently wstawić null dla ambiguous types
+// (kotlinx.serialization issue #2651).
+val launcherSize: Long = Files.size(launcherTarGz)
+val jreSize: Long = Files.size(jreTarGz)
+val autoUpdateSize: Long = Files.size(autoUpdateBin)
+
 val manifestJson: JsonObject = buildJsonObject {
     put("version", version)
     put("os", osSuffix)
     put("releasedAt", Instant.now().toString())
-    // Min auto-update version który potrafi zainstalować ten manifest.
-    // Wartość MUSI matchować `auto-update/Cargo.toml::[package].version`
-    // dla aktualnie wydawanych builds — inaczej freshly-built
-    // auto-update binary zobaczy remote manifest jako "too old" i
-    // wpadnie w FatalError na każdym userze. Bump oba w tym samym
-    // commit.
-    put("minAutoUpdateVersion", "1.0.0")
+    put("minAutoUpdateVersion", minAutoUpdateVersion)
     put("launcherExecutable", launcherExecutable)
     put("changelog", changelog)
-    put("files", buildJsonArray {
-        files.forEach { e ->
-            add(buildJsonObject {
-                put("path", e.path)
-                put("url", e.url)
-                put("size", e.size)
-                put("sha256", e.sha256)
-            })
-        }
+    put("launcher", buildJsonObject {
+        put("url", "$repoBaseUrl/$launcherAssetName")
+        put("sha256", sha256(launcherTarGz))
+        put("size", launcherSize)
+    })
+    put("jre", buildJsonObject {
+        put("url", "$repoBaseUrl/$jreAssetName")
+        put("sha256", sha256(jreTarGz))
+        put("size", jreSize)
+    })
+    put("autoUpdate", buildJsonObject {
+        put("url", "$repoBaseUrl/$autoUpdateAssetName")
+        put("sha256", sha256(autoUpdateBin))
+        put("size", autoUpdateSize)
+        put("version", autoUpdateVersion)
     })
 }
 
 val json = Json { prettyPrint = true }
 Files.writeString(outputPath, json.encodeToString(JsonObject.serializer(), manifestJson))
 
-println("Wrote manifest to $outputPath (${files.size} files)")
+println("Wrote manifest to $outputPath")
+println("  version=$version  autoUpdate=$autoUpdateVersion  os=$osSuffix")
+println("  launcher=$launcherAssetName (${launcherSize} B)")
+println("  jre=$jreAssetName (${jreSize} B)")
+println("  autoUpdate=$autoUpdateAssetName (${autoUpdateSize} B)")
