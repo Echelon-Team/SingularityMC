@@ -39,14 +39,29 @@ fn main() {
         // utrudnia diagnozowanie który build jest zainstalowany u usera.
         //
         // `CARGO_PKG_VERSION` = ten sam field z [package]::version
-        // z Cargo.toml (np. "1.1.0"). Windows oczekuje 4-part format
-        // (major.minor.patch.build) — dopełniamy zerem jeśli brak build.
+        // z Cargo.toml (np. "1.1.0"). Windows StringFileInfo oczekuje
+        // 4-part numeric format (major.minor.patch.build); dopełniamy
+        // zerem dla build.
         //
-        // Te wartości idą do StringFileInfo StringTable (czytane przez
-        // Windows Explorer GUI). Binary VS_FIXEDFILEINFO (numeric) jest
-        // ustawiany osobno przez `set_version_info()` — winres robi to
-        // automatycznie z CARGO_PKG_VERSION gdy go nie nadpiszemy explicite.
-        let file_version = format!("{}.0", env!("CARGO_PKG_VERSION"));
+        // SemVer pre-release/build-metadata suffixes (`-rc.1`, `+build.123`)
+        // MUSZĄ być obcięte bo StringFileInfo parser Windows je odrzuca
+        // jako invalid. VS_FIXEDFILEINFO (numeric 4×u16) i tak je ignoruje
+        // — winres auto-setuje FIXEDFILEINFO z CARGO_PKG_VERSION_MAJOR/
+        // MINOR/PATCH (zweryfikowane: Get-Item exe.VersionInfo zwraca
+        // poprawne FileMajorPart/MinorPart/BuildPart nawet bez explicit
+        // `set_version_info` call), więc obcięcie stringa synchronizuje
+        // oba warstwy.
+        //
+        // Debug-time assertion: panic na build gdy base nie jest 3-part
+        // numeric — lepszy early fail niż milcząco broken VersionInfo.
+        let raw_version = env!("CARGO_PKG_VERSION");
+        let base_version = raw_version.split(['-', '+']).next().unwrap_or(raw_version);
+        let parts: Vec<&str> = base_version.split('.').collect();
+        assert!(
+            parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
+            "CARGO_PKG_VERSION base '{base_version}' (from '{raw_version}') must be numeric 3-part 'x.y.z'"
+        );
+        let file_version = format!("{base_version}.0");
         res.set("FileVersion", &file_version);
         res.set("ProductVersion", &file_version);
         res.set("ProductName", "SingularityMC Auto-Update");
@@ -58,7 +73,7 @@ fn main() {
             // Nie fail build jeśli resource nie zbuduje — zbudowana binarka
             // bez icon/version info to tylko cosmetic regression, nie broken flow.
             // Inno Setup ma osobny SetupIconFile jako fallback.
-            println!("cargo:warning=winres embed failed: {e}");
+            println!("cargo:warning=winres resource embed failed (icon/version metadata skipped): {e}");
         }
     }
 }
