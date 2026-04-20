@@ -1,6 +1,61 @@
 #!/usr/bin/env bash
-# AppImage entrypoint. `$HERE` rozwiązuje się do tymczasowego katalogu
-# gdzie AppImage zamountował swoją zawartość; auto-update binarka
-# leży obok tego skryptu po wypakowaniu.
-HERE="$(dirname "$(readlink -f "${0}")")"
-exec "$HERE/auto-update" "$@"
+# SingularityMC AppImage entrypoint — Linux bootstrap (Task 11).
+#
+# 🔴 KRYTYCZNE — ten skrypt jest częścią immutable AppImage bundle.
+# Zmiana hash AppImage oznacza że dotychczasowi userzy nie mają
+# automatycznego trust — muszą pobrać na nowo. Patrz:
+#   docs/superpowers/specs/2026-04-20-universal-installer-auto-update-refactor-design.md §8
+#   memory rule: project_installer_hash_stability (Linux analogia mimo braku SmartScreen)
+#
+# Flow:
+#   1. Check czy ~/.local/share/SingularityMC/auto-update istnieje + jest executable
+#   2. Jeśli nie — pobierz z GitHub Releases latest (curl lub wget fallback)
+#   3. chmod +x + exec
+#
+# Kolejne uruchomienia: pomija download, od razu exec zainstalowanego
+# auto-update. Auto-update sam potem pobiera launcher.tar.gz + jre-linux.tar.gz
+# + samoupdates przez self_replace.
+#
+# URL hardcoded (immutable) per project_release_asset_naming_immutable.
+
+set -eu
+
+AUTO_UPDATE_URL="https://github.com/Echelon-Team/SingularityMC/releases/latest/download/auto-update-linux"
+INSTALL_DIR="${HOME}/.local/share/SingularityMC"
+AUTO_UPDATE_BIN="${INSTALL_DIR}/auto-update"
+
+mkdir -p "$INSTALL_DIR"
+
+# First-run download. Kolejne uruchomienia mają auto-update już z samo-update
+# mechanizmu, więc skipujemy network zupełnie.
+if [ ! -x "$AUTO_UPDATE_BIN" ]; then
+    echo "Pierwsze uruchomienie: pobieranie auto-update z $AUTO_UPDATE_URL"
+    # curl preferowany (bsd/most-distro default), wget fallback (Debian-heavy).
+    # `command -v ... >/dev/null 2>&1` nie fails pod set -eu bo jest w if-chain.
+    if command -v curl >/dev/null 2>&1; then
+        if ! curl -fsSL -o "$AUTO_UPDATE_BIN" "$AUTO_UPDATE_URL"; then
+            echo "Błąd: nie udało się pobrać auto-update z $AUTO_UPDATE_URL" >&2
+            echo "Sprawdź połączenie z internetem i uruchom AppImage ponownie." >&2
+            exit 1
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if ! wget -qO "$AUTO_UPDATE_BIN" "$AUTO_UPDATE_URL"; then
+            echo "Błąd: nie udało się pobrać auto-update z $AUTO_UPDATE_URL" >&2
+            echo "Sprawdź połączenie z internetem i uruchom AppImage ponownie." >&2
+            exit 1
+        fi
+    else
+        echo "Błąd: brak zarówno curl jak i wget w systemie." >&2
+        echo "Zainstaluj jedno z nich (np. 'sudo apt install curl') i spróbuj ponownie." >&2
+        exit 1
+    fi
+    chmod +x "$AUTO_UPDATE_BIN"
+    echo "Pobieranie zakończone. Uruchamianie SingularityMC..."
+fi
+
+# SINGULARITY_INSTALL_DIR env var propagowana do auto-update i launcher
+# (spec §6.1 — install_dir jest read parent z current_exe Windows side,
+# ale na Linux AppImage uruchamiany z AppImage mount, więc auto-update
+# nie umie wyderivować go sam).
+export SINGULARITY_INSTALL_DIR="$INSTALL_DIR"
+exec "$AUTO_UPDATE_BIN" "$@"

@@ -209,7 +209,10 @@ jobs:
 
       - name: Build Linux AppImage
         if: matrix.os == 'ubuntu-latest'
-        run: bash scripts/build-appimage.sh ${{ env.VERSION }}
+        # Universal AppImage (Task 11) — OutputBaseFilename stały
+        # (SingularityMC-Installer.AppImage). Bez VERSION argumentu bo
+        # AppImage nie zawiera auto-update (AppRun pobiera przy pierwszym run).
+        run: bash scripts/build-appimage.sh
 
       # Upload: tylko ~5 assetów per OS (było ~250). Release job downloaduje
       # i bezpośrednio wrzuca do GitHub Release — bez ponownego copy-release-files
