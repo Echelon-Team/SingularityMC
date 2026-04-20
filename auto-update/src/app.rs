@@ -819,27 +819,63 @@ async fn process_release(
         updater::backup_runtime(&install_dir)?;
     }
 
-    // Extract tar.gz do install_dir/launcher/ + install_dir/runtime/.
-    // Dla auto-update (single exe, nie tar): copy z tmp/ do install_dir/.
-    for (name, path) in &downloaded_paths {
-        match name.as_str() {
-            "launcher.tar.gz" => updater::extract_launcher_bundle(path, &install_dir)?,
-            n if n.starts_with("jre-") => updater::extract_jre_bundle(path, &install_dir)?,
-            n if n.starts_with("auto-update") => {
-                // Stage new auto-update binary dla self-replace na next boot
-                // (self_update.rs handles actual swap). Zapisujemy pod
-                // install_dir/{filename}.new — `apply_pending` przy następnym
-                // starcie auto-update.exe zamienia w miejscu.
-                let target = install_dir.join(format!("{}.new", n));
-                std::fs::copy(path, &target).map_err(UpdaterError::Io)?;
-                log::info!("staged new auto-update binary at {}", target.display());
+    // Extract phase z auto-rollback na partial fail. Tar::Archive::unpack()
+    // na fail zostawia wcześniej wypakowane pliki w target_dir — silent-failure
+    // BLOCKER #2 z review. Wrap w closure i rollback immediately gdy fail:
+    // cleanup partial content + rename .old/ → /.
+    //
+    // Auto-update binary: staged pod `self_update::pending_path(current_exe)`
+    // — filename MUSI matchować tego czego apply_pending szuka, inaczej
+    // silent no-op (BLOCKER #1 z review). Używamy current_exe path direct
+    // zamiast derive z download filename — zabezpiecza przed ciszą gdy
+    // installer używa innego os-suffix convention niż manifest.
+    let current_exe = std::env::current_exe().map_err(UpdaterError::Io)?;
+    let extract_result = (|| -> Result<()> {
+        for (name, path) in &downloaded_paths {
+            match name.as_str() {
+                "launcher.tar.gz" => updater::extract_launcher_bundle(path, &install_dir)?,
+                n if n.starts_with("jre-") => updater::extract_jre_bundle(path, &install_dir)?,
+                n if n.starts_with("auto-update") => {
+                    // Stage new auto-update binary pod `pending_path(current_exe)`
+                    // żeby self_update::apply_pending znalazł go na next boot.
+                    let pending = crate::self_update::pending_path(&current_exe);
+                    std::fs::copy(path, &pending).map_err(UpdaterError::Io)?;
+                    log::info!("staged new auto-update binary at {}", pending.display());
+                }
+                // Downloader sources są ograniczone do 3 znanych typów
+                // (decide_update produkuje targets). Nowy typ = regresja
+                // w build-system, lepiej panic niż silently skip install.
+                _ => unreachable!("unexpected download target: {name}"),
             }
-            _ => log::warn!("unexpected download target {name}, skipping install"),
         }
+        Ok(())
+    })();
+
+    if let Err(e) = extract_result {
+        log::warn!("extract failed ({e}); auto-rolling back to .old/ backups");
+        // Cleanup partial content z each target. Rollback restored state
+        // z .old/ siblings jeśli istnieją (backup_launcher/runtime było
+        // wywołane warunkowo per decision.needed; tu tolerate missing).
+        let _ = updater::cleanup_partial_extract(&install_dir, updater::LAUNCHER_DIR);
+        let _ = updater::cleanup_partial_extract(&install_dir, updater::RUNTIME_DIR);
+        if install_dir.join(updater::LAUNCHER_OLD_DIR).exists() {
+            let _ = updater::rollback_launcher(&install_dir);
+        }
+        if install_dir.join(updater::RUNTIME_OLD_DIR).exists() {
+            let _ = updater::rollback_runtime(&install_dir);
+        }
+        return Err(e);
     }
 
     // Zaktualizuj local-manifest.json — snapshot aktualnego stanu
     // instalacji (co user ma zainstalowane).
+    //
+    // WARN #3 z review: jeśli write_local fail post-extract success,
+    // state inconsistent (pliki nowe, manifest stary). Akceptowalne:
+    // next start re-czyta stary manifest, decide_update triggeruje
+    // re-download (sha mismatch) i self-heal. Waste bandwidth ale nie
+    // data loss. Alternatywa (write przed extract) niemożliwa bez
+    // transactional filesystem.
     remote.write_local(&install_dir)?;
 
     // `_temp_guard` drops here → usuwa tmp/.

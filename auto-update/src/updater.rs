@@ -85,19 +85,41 @@ pub fn decide_update(remote: &Manifest, local: Option<&Manifest>) -> UpdateDecis
 
 /// Sprawdza czy sha256 lokalnego pliku matches oczekiwanego. Streaming —
 /// nie ładuje całego pliku do pamięci (paczki bywają >30 MB).
-/// Zwraca Err dla missing file, I/O fail, lub hash mismatch.
+///
+/// **Error semantics:**
+/// - Missing file / I/O read fail → `UpdaterError::Io`
+/// - Hash mismatch → `UpdaterError::HashMismatch { path, expected, actual }`
+///   z file name (ManifestPath-wrapped) — structured dla retry logic
+///   (classifier: nie permanent, worth re-download).
 pub fn verify_sha256(path: &Path, expected: &Sha256) -> Result<()> {
+    use sha2::{Digest, Sha256 as Hasher};
     let file = fs::File::open(path).map_err(UpdaterError::Io)?;
     let mut reader = std::io::BufReader::new(file);
-    let ok = expected.verify_reader(&mut reader)?;
-    if !ok {
-        return Err(UpdaterError::Manifest(format!(
-            "sha256 mismatch for {}: expected {}",
-            path.display(),
-            expected.as_str()
-        )));
+    let mut hasher = Hasher::new();
+    std::io::copy(&mut reader, &mut hasher).map_err(UpdaterError::Io)?;
+    let actual_hex = hex::encode(hasher.finalize());
+
+    if actual_hex == expected.as_str() {
+        return Ok(());
     }
-    Ok(())
+
+    // Budujemy structured HashMismatch. ManifestPath wymaga relative +
+    // no traversal; path argument jest full fs path (typowo tmp file),
+    // więc używamy tylko file_name component — "launcher.tar.gz" etc.
+    // przechodzi ManifestPath walidację (no slash, no traversal).
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let mpath = crate::ManifestPath::parse(&filename)
+        .unwrap_or_else(|_| crate::ManifestPath::parse("unknown").expect("literal valid"));
+    let actual = Sha256::parse(&actual_hex).ok();
+
+    Err(UpdaterError::HashMismatch {
+        path: mpath,
+        expected: expected.clone(),
+        actual,
+    })
 }
 
 /// Backup current `launcher/` → `launcher.old/`. Jeśli `launcher.old/` już
@@ -323,14 +345,23 @@ mod tests {
     }
 
     #[test]
-    fn verify_sha256_fails_for_mismatch() {
+    fn verify_sha256_fails_for_mismatch_with_structured_error() {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("file.bin");
         fs::write(&path, b"actual content").unwrap();
 
         let wrong = Sha256::parse(&"a".repeat(64)).unwrap();
         let err = verify_sha256(&path, &wrong).unwrap_err();
-        assert!(matches!(err, UpdaterError::Manifest(_)));
+
+        match err {
+            UpdaterError::HashMismatch { path, expected, actual } => {
+                assert_eq!(path.as_str(), "file.bin");
+                assert_eq!(expected.as_str(), &"a".repeat(64));
+                assert!(actual.is_some(), "actual hash must be captured");
+                assert_ne!(actual.unwrap().as_str(), expected.as_str());
+            }
+            other => panic!("expected HashMismatch, got {other:?}"),
+        }
     }
 
     #[test]
