@@ -70,10 +70,20 @@ fn main() {
         res.set("LegalCopyright", "(c) 2026 Echelon Team");
 
         if let Err(e) = res.compile() {
-            // Nie fail build jeśli resource nie zbuduje — zbudowana binarka
-            // bez icon/version info to tylko cosmetic regression, nie broken flow.
-            // Inno Setup ma osobny SetupIconFile jako fallback.
-            println!("cargo:warning=winres resource embed failed (icon/version metadata skipped): {e}");
+            // W release profile PANIC — FileVersion jest celem tego całego
+            // mechanizmu (spec §4.2: "user widzi w Windows Properties
+            // właściwy numer"). Silently broken artifact w CI = Task 1
+            // nie spełnia contract. Panic zatrzymuje CI żeby error nie
+            // przeszedł niezauważony.
+            //
+            // W debug/dev iteration warning wystarczy — developer widzi
+            // go lokalnie, icon embed fail to realnie cosmetic.
+            if std::env::var("PROFILE").as_deref() == Ok("release") {
+                panic!("winres resource embed failed in release profile: {e}");
+            }
+            println!(
+                "cargo:warning=winres resource embed failed (icon/version metadata skipped): {e}"
+            );
         }
     }
 }
