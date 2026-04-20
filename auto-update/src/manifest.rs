@@ -61,7 +61,8 @@ pub struct Manifest {
     pub min_auto_update_version: Version,
     /// Path w install_dir do launcher executable (walidowany ManifestPath —
     /// no traversal, relative, forward-slash). Typowo: "launcher/SingularityMC.exe"
-    /// (Windows), "launcher/bin/SingularityMC" (Linux).
+    /// (Windows), "launcher/bin/singularitymc" (Linux — Compose Desktop
+    /// `linux.packageName = "singularitymc"` lowercase override).
     pub launcher_executable: ManifestPath,
     /// Markdown changelog — wyświetlany w UI auto-update + news feed launcher-a
     /// (spec §4.12). Domyślnie pusty string dla release'ów bez notes.

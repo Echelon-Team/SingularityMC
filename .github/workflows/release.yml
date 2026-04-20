@@ -31,10 +31,17 @@ jobs:
             os_suffix: windows
             exe_ext: .exe
             auto_update_bin: singularitymc-auto-update.exe
+            # Compose Desktop `nativeDistributions.packageName` (global =
+            # "SingularityMC", Linux override = "singularitymc" lowercase
+            # w build.gradle.kts). Steruje nazwą dir pod build/compose/
+            # binaries/main/app/<name>/ — musi matchować per OS albo
+            # copy-release-files.sh nie znajdzie runtime/.
+            app_dir_name: SingularityMC
           - os: ubuntu-latest
             os_suffix: linux
             exe_ext: ''
             auto_update_bin: singularitymc-auto-update
+            app_dir_name: singularitymc
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -155,7 +162,7 @@ jobs:
           mkdir -p release
           chmod +x scripts/copy-release-files.sh
           bash scripts/copy-release-files.sh \
-              singularity-launcher/build/compose/binaries/main/app/SingularityMC \
+              singularity-launcher/build/compose/binaries/main/app/${{ matrix.app_dir_name }} \
               release \
               ${{ matrix.os_suffix }}
 

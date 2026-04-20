@@ -92,13 +92,16 @@ fun sha256(path: Path): String {
     return md.digest().joinToString("") { "%02x".format(it) }
 }
 
-// Launcher executable relative path w install_dir. Windows: jpackage
-// produkuje `SingularityMC.exe` w root folderze aplikacji (nie bin/).
-// Linux: binary idzie do bin/SingularityMC. Rust auto-update używa tego
-// dla `launcher::spawn` po extract.
+// Launcher executable relative path w install_dir. Compose Desktop
+// `nativeDistributions.packageName` steruje nazwą binarki:
+//   Windows (global packageName = "SingularityMC") → SingularityMC.exe
+//     w root folderze aplikacji (nie bin/)
+//   Linux  (Linux override packageName = "singularitymc" lowercase) →
+//     bin/singularitymc
+// Rust auto-update używa tego dla `launcher::spawn` po extract.
 val launcherExecutable = when (osSuffix) {
     "windows" -> "launcher/SingularityMC.exe"
-    "linux" -> "launcher/bin/SingularityMC"
+    "linux" -> "launcher/bin/singularitymc"
     else -> error("unreachable (require check above)")
 }
 

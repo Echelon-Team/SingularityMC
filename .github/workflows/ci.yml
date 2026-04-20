@@ -57,12 +57,6 @@ jobs:
         run: cargo test --all-targets --locked
         shell: bash
 
-      # Shell scripts lint — catches SC2086 (unquoted vars), SC2164 (unsafe cd),
-      # i inne bash footguns. Zapobiega silent fails w release.yml / AppRun.
-      - name: Shellcheck
-        run: shellcheck installer/AppRun scripts/*.sh
-        shell: bash
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -71,3 +65,15 @@ jobs:
           path: |
             singularity-agent/build/libs/*.jar
             **/build/reports/tests/
+
+  # Shell scripts lint — catches SC2086 (unquoted vars), SC2164 (unsafe cd),
+  # i inne bash footguns. Zapobiega silent fails w release.yml / AppRun.
+  # Osobny ubuntu-latest job bo windows-latest runner nie ma shellcheck
+  # preinstalled (choco install byłby 20-30s overhead) — Linux runner ma
+  # shellcheck z apt baseline, zero install time.
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: shellcheck installer/AppRun scripts/*.sh

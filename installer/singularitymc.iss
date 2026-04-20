@@ -121,12 +121,12 @@ Type: files; Name: "{app}\launcher-crash-counter"
 Type: files; Name: "{app}\self-update-alive-flag"
 Type: files; Name: "{app}\self-update-crash-counter"
 
+; URL hardcoded — immutable per project_release_asset_naming_immutable.
+; Zmiana = dead installer hash. `releases/latest/download/<name>` to
+; GitHub standard redirect API który zwraca 302 → actual asset URL dla
+; najnowszego stable release.
 [Code]
 const
-  ; URL hardcoded — immutable per project_release_asset_naming_immutable.
-  ; Zmiana = dead installer hash. `releases/latest/download/<name>` to
-  ; GitHub standard redirect API który zwraca 302 → actual asset URL dla
-  ; najnowszego stable release.
   AUTO_UPDATE_URL = 'https://github.com/Echelon-Team/SingularityMC/releases/latest/download/auto-update-windows.exe';
 
 // Pascal code wywołane w ssPostInstall — PO [Files] (icon + config
