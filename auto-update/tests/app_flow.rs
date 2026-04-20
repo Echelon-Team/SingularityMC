@@ -88,14 +88,112 @@ fn release_json(tag: &str, manifest_url: &str) -> String {
     )
 }
 
-/// Build a valid per-OS manifest JSON. 3-package schema (v1.2.x) — launcher/
-/// jre/autoUpdate jako named fields, zero sha256 (tests nie porównują
-/// z real hashes). `launcher_rel` argument pozwala testom assert'ować
-/// returned launcher path.
-///
-/// `files` parameter zostawione dla backward-compat z existing test callers —
-/// pierwsza entry's `path` wybierana jako `launcherExecutable`, reszta
-/// ignorowana (3-package model nie ma per-file manifestu).
+/// Build minimal tar.gz blob z jednym plikiem — używany jako launcher/jre
+/// bundle body w wiremock responses. Zwraca (bytes, sha256_hex) — sha
+/// matching dla manifest fixture (w ten sposób `verify_sha256` w updater
+/// nie failuje, extract rozpakowuje content).
+fn build_test_tar_gz(entry_path: &str, entry_content: &[u8]) -> (Vec<u8>, String) {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    let mut gz_buf: Vec<u8> = Vec::new();
+    {
+        let gz = GzEncoder::new(&mut gz_buf, Compression::default());
+        let mut builder = tar::Builder::new(gz);
+        let mut header = tar::Header::new_gnu();
+        header.set_path(entry_path).unwrap();
+        header.set_size(entry_content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append(&header, entry_content).unwrap();
+        builder.finish().unwrap();
+    }
+    let sha = sha256_hex(&gz_buf);
+    (gz_buf, sha)
+}
+
+/// Bundles wszystkich 3 paczek dla successful update mock. Każda paczka
+/// dostaje minimal tar.gz z jednym plikiem (enough for extract + sha256
+/// verify passing). Auto-update binary to raw bytes (nie tar).
+struct MockBundles {
+    launcher_tar: Vec<u8>,
+    launcher_sha: String,
+    jre_tar: Vec<u8>,
+    jre_sha: String,
+    au_bin: Vec<u8>,
+    au_sha: String,
+}
+
+fn make_mock_bundles() -> MockBundles {
+    let (launcher_tar, launcher_sha) =
+        build_test_tar_gz("SingularityMC.exe", b"fake launcher executable");
+    let (jre_tar, jre_sha) = build_test_tar_gz("bin/java.exe", b"fake jvm binary");
+    let au_bin: Vec<u8> = b"fake auto-update binary".to_vec();
+    let au_sha = sha256_hex(&au_bin);
+    MockBundles {
+        launcher_tar,
+        launcher_sha,
+        jre_tar,
+        jre_sha,
+        au_bin,
+        au_sha,
+    }
+}
+
+/// Mount wiremock endpoints dla 3 bundles + build matching manifest JSON.
+/// Zwraca manifest JSON string (test mountuje go pod /download/manifest-<os>.json).
+/// Async bo wiremock `.mount()` jest async.
+#[allow(clippy::too_many_arguments)]
+async fn mount_bundles_and_build_manifest(
+    server: &MockServer,
+    bundles: &MockBundles,
+    version: &str,
+    launcher_exe: &str,
+    au_version: &str,
+    min_auto_update_version: &str,
+) -> String {
+    let launcher_url = format!("{}/download/launcher-windows.tar.gz", server.uri());
+    let jre_url = format!("{}/download/jre-windows.tar.gz", server.uri());
+    let au_url = format!("{}/download/auto-update-windows.exe", server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/download/launcher-windows.tar.gz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bundles.launcher_tar.clone()))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/jre-windows.tar.gz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bundles.jre_tar.clone()))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/auto-update-windows.exe"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bundles.au_bin.clone()))
+        .mount(server)
+        .await;
+
+    format!(
+        r#"{{
+            "version":"{version}","os":"windows","releasedAt":"2026-04-15T10:00:00Z",
+            "minAutoUpdateVersion":"{min_auto_update_version}","launcherExecutable":"{launcher_exe}",
+            "changelog":"- test",
+            "launcher":{{"url":"{launcher_url}","sha256":"{}","size":{}}},
+            "jre":{{"url":"{jre_url}","sha256":"{}","size":{}}},
+            "autoUpdate":{{"url":"{au_url}","sha256":"{}","size":{},"version":"{au_version}"}}
+        }}"#,
+        bundles.launcher_sha,
+        bundles.launcher_tar.len(),
+        bundles.jre_sha,
+        bundles.jre_tar.len(),
+        bundles.au_sha,
+        bundles.au_bin.len(),
+    )
+}
+
+/// Legacy `manifest_json` helper dla testów które potrzebują tylko
+/// minimal manifest (np. minAutoUpdateVersion gate, malformed JSON tests).
+/// Zero sha256 — nie konsumowane w tych scenariuszach bo early-exit
+/// przed download.
+#[allow(dead_code)]
 fn manifest_json(version: &str, files: &[(&str, &str, u64, &str)]) -> String {
     let launcher_rel = files
         .first()
@@ -149,37 +247,23 @@ fn latest_release_path() -> String {
 // ---------- scenarios ----------
 
 #[tokio::test(flavor = "current_thread")]
-// TODO Task 12 follow-up: nowy bundle flow wymaga wiremock endpointów
-// dla launcher-<os>.tar.gz + jre-<os>.tar.gz + auto-update-<os>[.exe]
-// z real tar.gz content (sha256 matching dummy_manifest). Dziś test
-// hangs bo process_release czeka na HTTP 200 z body dla pobierania paczek
-// których mock nie serwuje. Pełny rewrite: wiremock mount per-bundle,
-// tar::Builder generated body, sha256 dynamic calculation.
-#[ignore = "Task 12 TODO: needs wiremock endpoints for 3-package bundles"]
 async fn happy_path_transitions_to_updated() {
     let install_dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
 
-    let file_bytes: &[u8] = b"fake launcher jar content";
-    let file_sha = sha256_hex(file_bytes);
-    let file_url = format!("{}/download/launcher-app.jar", server.uri());
     let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
 
-    Mock::given(method("GET"))
-        .and(path("/download/launcher-app.jar"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(file_bytes.to_vec()))
-        .mount(&server)
-        .await;
-
-    let m_json = manifest_json(
+    // Mount 3 bundle endpoints + build manifest z matching sha256.
+    let bundles = make_mock_bundles();
+    let m_json = mount_bundles_and_build_manifest(
+        &server,
+        &bundles,
         "0.1.0",
-        &[(
-            "launcher/app.jar",
-            &file_url,
-            file_bytes.len() as u64,
-            &file_sha,
-        )],
-    );
+        "launcher/SingularityMC.exe",
+        "1.0.0",
+        "0.1.0",
+    )
+    .await;
     Mock::given(method("GET"))
         .and(path("/download/manifest-windows.json"))
         .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
@@ -208,9 +292,9 @@ async fn happy_path_transitions_to_updated() {
 
     match result {
         Ok(FlowOutcome::Updated(launcher_rel)) => {
-            assert_eq!(launcher_rel.as_str(), "launcher/app.jar");
+            assert_eq!(launcher_rel.as_str(), "launcher/SingularityMC.exe");
         }
-        other => panic!("expected Updated(launcher/app.jar), got {other:?}"),
+        other => panic!("expected Updated(launcher/SingularityMC.exe), got {other:?}"),
     }
 
     // Positive terminal-pre-main state: `process_release` leaves state
@@ -424,7 +508,6 @@ async fn channel_closed_before_user_decision_is_notfound() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "Task 12 TODO: needs wiremock endpoints for 3-package bundles"]
 async fn api_auto_retries_on_second_tick_after_first_failure() {
     // Covers the `Ok(release)` arm of the auto-retry `select!` inside
     // `handle_api_failure`: first tick's API call fails, second tick's
@@ -439,9 +522,6 @@ async fn api_auto_retries_on_second_tick_after_first_failure() {
     let install_dir = tempfile::tempdir().unwrap();
 
     let server = MockServer::start().await;
-    let file_bytes: &[u8] = b"mid-loop recovery payload";
-    let file_sha = sha256_hex(file_bytes);
-    let file_url = format!("{}/download/launcher-app.jar", server.uri());
     let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
 
     // One failure then success — exercises inner-loop recovery.
@@ -458,23 +538,20 @@ async fn api_auto_retries_on_second_tick_after_first_failure() {
         .mount(&server)
         .await;
 
-    let m_json = manifest_json(
+    // Mount 3 bundle endpoints + build manifest z matching sha256.
+    let bundles = make_mock_bundles();
+    let m_json = mount_bundles_and_build_manifest(
+        &server,
+        &bundles,
         "0.1.0",
-        &[(
-            "launcher/app.jar",
-            &file_url,
-            file_bytes.len() as u64,
-            &file_sha,
-        )],
-    );
+        "launcher/SingularityMC.exe",
+        "1.0.0",
+        "0.1.0",
+    )
+    .await;
     Mock::given(method("GET"))
         .and(path("/download/manifest-windows.json"))
         .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/download/launcher-app.jar"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(file_bytes.to_vec()))
         .mount(&server)
         .await;
 
@@ -498,7 +575,7 @@ async fn api_auto_retries_on_second_tick_after_first_failure() {
 
     match result {
         Ok(FlowOutcome::Updated(launcher_rel)) => {
-            assert_eq!(launcher_rel.as_str(), "launcher/app.jar");
+            assert_eq!(launcher_rel.as_str(), "launcher/SingularityMC.exe");
         }
         other => panic!("expected Updated after mid-loop retry, got {other:?}"),
     }
@@ -1080,64 +1157,47 @@ async fn manifest_requiring_newer_auto_update_surfaces_fatal() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// TODO Task 12 follow-up: test expectował .tmp-update/ path ale Task 5
-// refactor zmienił na install_dir/tmp/ (updater::TMP_DIR). Plus new flow
-// używa extract + bundle download — wiremock endpoints jak w happy_path.
-#[ignore = "Task 12 TODO: tmp dir path changed + needs bundle endpoints"]
 async fn temp_dir_pre_clean_wipes_stale_content_on_entry() {
-    // Pre-existing `.tmp-update/` content from a crashed prior run
-    // must be wiped when `process_release` starts.
+    // Pre-existing `install_dir/tmp/` content z crashed prior run musi
+    // być wiped gdy `process_release` starts. Task 5 refactor zmienił
+    // tmp path z ".tmp-update/" na "install_dir/tmp/" (updater::TMP_DIR
+    // stała — spójna między Rust + installer .iss UninstallDelete).
     //
-    // Previous iterations of this test seeded either (a) an unrelated
-    // sentinel file at a path the downloader never touches, or (b)
-    // stale bytes at the download target. Both FALSELY passed: (a)
-    // TempDirGuard::drop wipes on exit regardless; (b) `File::create`
-    // truncates, so stale bytes get overwritten before hash-verify.
-    //
-    // The reliable signal: the `Downloader` writes to
-    // `.tmp-update/<basename>` (downloader.rs:134 — file_name is the
-    // basename of `file.path`, NOT the full relative path). Seed a
-    // DIRECTORY at that exact path. With pre-clean: remove_dir_all
-    // wipes `.tmp-update/` entirely, Downloader::new recreates it
-    // empty, `File::create(".tmp-update/app.jar")` succeeds because
-    // there's no directory in the way. WITHOUT pre-clean: the
-    // directory survives process_release entry, `File::create` fails
-    // with "Is a directory"/"Access is denied", and the flow errors
-    // out. Mutation finally catches.
+    // Mutation signal: seed DIRECTORY na exact path gdzie downloader
+    // będzie wywoływał `File::create`. Downloader basename-from-path
+    // dla bundle download targets (np. "launcher-windows.tar.gz"):
+    // `File::create(install_dir/tmp/launcher-windows.tar.gz)`. Seed
+    // directory tam = File::create fails z "Is a directory" gdy pre-clean
+    // nie jest wywołane. Z pre-clean: remove_dir_all(tmp/) wipes, Downloader
+    // recreates empty tmp/, File::create succeeds.
     let install_dir = tempfile::tempdir().unwrap();
-    let stale_temp = install_dir.path().join(".tmp-update");
-    // Create a directory exactly where the downloader will try to
-    // `File::create` the JAR (basename = "app.jar", per
-    // downloader.rs:134 basename-only logic).
-    let blocking_dir = stale_temp.join("app.jar");
+    let stale_temp = install_dir.path().join("tmp");
+    // Blocker pod exact path gdzie downloader będzie zapisywać launcher tarball.
+    let blocking_dir = stale_temp.join("launcher-windows.tar.gz");
     std::fs::create_dir_all(&blocking_dir).unwrap();
-    std::fs::write(blocking_dir.join("junk.bin"), b"survives without pre-clean")
-        .unwrap();
+    std::fs::write(
+        blocking_dir.join("junk.bin"),
+        b"survives without pre-clean",
+    )
+    .unwrap();
     assert!(
         blocking_dir.is_dir(),
         "pre-condition: directory obstruction at download target"
     );
 
     let server = MockServer::start().await;
-    let file_bytes: &[u8] = b"fresh payload";
-    let file_sha = sha256_hex(file_bytes);
-    let file_url = format!("{}/download/launcher-app.jar", server.uri());
     let manifest_url = format!("{}/download/manifest-windows.json", server.uri());
 
-    Mock::given(method("GET"))
-        .and(path("/download/launcher-app.jar"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(file_bytes.to_vec()))
-        .mount(&server)
-        .await;
-    let m_json = manifest_json(
+    let bundles = make_mock_bundles();
+    let m_json = mount_bundles_and_build_manifest(
+        &server,
+        &bundles,
         "0.1.0",
-        &[(
-            "launcher/app.jar",
-            &file_url,
-            file_bytes.len() as u64,
-            &file_sha,
-        )],
-    );
+        "launcher/SingularityMC.exe",
+        "1.0.0",
+        "0.1.0",
+    )
+    .await;
     Mock::given(method("GET"))
         .and(path("/download/manifest-windows.json"))
         .respond_with(ResponseTemplate::new(200).set_body_string(m_json))
@@ -1163,15 +1223,9 @@ async fn temp_dir_pre_clean_wipes_stale_content_on_entry() {
     )
     .await;
 
-    // With the entry pre-clean active, the blocking directory is
-    // removed before the download starts, `File::create` succeeds,
-    // and the flow reports Updated. Without the pre-clean (mutation:
-    // delete `fs::remove_dir_all(&temp_dir)` at process_release top),
-    // the directory remains and `File::create` fails → flow returns
-    // Err. This is the assertion that actually gates the pre-clean.
     assert!(
         matches!(result, Ok(FlowOutcome::Updated(_))),
-        "pre-clean must remove the blocking directory so File::create \
-         can create the fresh download file; got {result:?}"
+        "pre-clean musi usunąć blokujący directory żeby File::create \
+         mógł utworzyć fresh download file; got {result:?}"
     );
 }
