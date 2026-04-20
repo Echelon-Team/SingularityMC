@@ -32,6 +32,7 @@ pub mod app;
 pub mod config;
 pub mod downloader;
 pub mod error;
+pub mod extract;
 pub mod github_api;
 pub mod i18n;
 pub mod launcher;
