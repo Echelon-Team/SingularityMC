@@ -33,11 +33,32 @@ fn main() {
         println!("cargo:rerun-if-changed=../installer/icon.ico");
         let mut res = winres::WindowsResource::new();
         res.set_icon("../installer/icon.ico");
+
+        // Windows FileVersion string metadata — widoczne w Properties →
+        // Szczegóły. Bez tego user widzi puste pola / Rust default co
+        // utrudnia diagnozowanie który build jest zainstalowany u usera.
+        //
+        // `CARGO_PKG_VERSION` = ten sam field z [package]::version
+        // z Cargo.toml (np. "1.1.0"). Windows oczekuje 4-part format
+        // (major.minor.patch.build) — dopełniamy zerem jeśli brak build.
+        //
+        // Te wartości idą do StringFileInfo StringTable (czytane przez
+        // Windows Explorer GUI). Binary VS_FIXEDFILEINFO (numeric) jest
+        // ustawiany osobno przez `set_version_info()` — winres robi to
+        // automatycznie z CARGO_PKG_VERSION gdy go nie nadpiszemy explicite.
+        let file_version = format!("{}.0", env!("CARGO_PKG_VERSION"));
+        res.set("FileVersion", &file_version);
+        res.set("ProductVersion", &file_version);
+        res.set("ProductName", "SingularityMC Auto-Update");
+        res.set("FileDescription", "SingularityMC auto-update daemon");
+        res.set("CompanyName", "Echelon Team");
+        res.set("LegalCopyright", "(c) 2026 Echelon Team");
+
         if let Err(e) = res.compile() {
-            // Nie fail build jeśli ikona nie zbuduje — zbudowana binarka
-            // bez icon to tylko cosmetic regression, nie broken flow.
+            // Nie fail build jeśli resource nie zbuduje — zbudowana binarka
+            // bez icon/version info to tylko cosmetic regression, nie broken flow.
             // Inno Setup ma osobny SetupIconFile jako fallback.
-            println!("cargo:warning=winres icon embed failed: {e}");
+            println!("cargo:warning=winres embed failed: {e}");
         }
     }
 }

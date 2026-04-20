@@ -12,7 +12,10 @@ name = "singularitymc-auto-update"
 # Ta wersja jest embedowana w exe przez `build.rs` → env `BUILD_VERSION`
 # → stałą `crate::BUILD_VERSION` używaną przez main.rs `--version` +
 # update flow's minAutoUpdateVersion compatibility check.
-version = "1.0.0"
+# Bump per rule `feedback_auto_update_version_bump`: edycja auto-update/src
+# → ten sam commit bumpuje version. 1.0.0 → 1.1.0 (minor: nowy feature —
+# tar.gz bundle extraction + 3-package manifest schema).
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Auto-update bootstrap for the SingularityMC launcher"
@@ -80,6 +83,17 @@ serde_json = "1.0"
 # Hashing for SHA-256 manifest verification (Task 2.5).
 sha2 = "0.10"
 hex = "0.4"
+
+# Streaming gzip decoder — decompress tar.gz w jednym kroku z download
+# (read from reqwest bytes::Stream bez intermediate buffer pełnego pliku).
+# Używane przez src/extract.rs dla launcher.tar.gz + jre-<os>.tar.gz.
+flate2 = "1"
+
+# Tar archive parser. Używamy `Archive::unpack()` dla batch extract do
+# target dir. Zachowuje relatywne ścieżki, tar crate sanitizes paths
+# (rzuca error na `..` albo absolute) — drugi poziom obrony przy zip-slip.
+# Nie zachowuje Unix perms (nieistotne dla Windows .dll/.exe).
+tar = "0.4"
 
 # Atomic self-replace of the running executable (Task 2.7).
 self-replace = "1.5"
