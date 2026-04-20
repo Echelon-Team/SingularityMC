@@ -202,7 +202,10 @@ jobs:
       - name: Build Windows installer
         if: matrix.os == 'windows-latest'
         shell: bash
-        run: iscc installer/singularitymc.iss //DVERSION=${{ env.VERSION }}
+        # Universal installer (Task 10) — OutputBaseFilename stały
+        # (SingularityMC-Installer), AppVersion hardcoded w .iss (immutable
+        # hash per SmartScreen reputation rule). Bez /DVERSION override.
+        run: iscc installer/singularitymc.iss
 
       - name: Build Linux AppImage
         if: matrix.os == 'ubuntu-latest'
@@ -220,8 +223,8 @@ jobs:
             release/jre-${{ matrix.os_suffix }}.tar.gz
             release/auto-update-${{ matrix.os_suffix }}${{ matrix.exe_ext }}
             release/manifest-${{ matrix.os_suffix }}.json
-            installer/SingularityMC-Setup-*.exe
-            installer/SingularityMC-*.AppImage
+            installer/SingularityMC-Installer.exe
+            installer/SingularityMC-Installer.AppImage
           retention-days: 30
 
   release:
@@ -282,21 +285,19 @@ jobs:
           fi
           cp artifacts/build-linux/auto-update-linux release/
 
-          # Installer (Windows) + AppImage (Linux) — user-facing entry points.
-          # Patrz project_installer_hash_stability memory rule — installer
-          # hash MUSI być stały. Task 10 + Task 11 czynią installer universal
-          # (bez wersji w nazwie). Do tego czasu release ma wersjonowaną
-          # nazwę (tymczasowe, zmienia się w Task 10).
-          if ! ls artifacts/build-windows/SingularityMC-Setup-*.exe >/dev/null 2>&1; then
-              echo "::error::Windows installer artifact missing — iscc failed upstream" >&2
+          # Installer (Windows) + AppImage (Linux) — universal names bez
+          # wersji. Hash MUSI być stały per project_installer_hash_stability
+          # memory rule (SmartScreen reputation bez code signing).
+          if [ ! -f artifacts/build-windows/SingularityMC-Installer.exe ]; then
+              echo "::error::Windows installer missing — iscc failed upstream" >&2
               exit 1
           fi
-          cp artifacts/build-windows/SingularityMC-Setup-*.exe release/
-          if ! ls artifacts/build-linux/SingularityMC-*.AppImage >/dev/null 2>&1; then
-              echo "::error::Linux AppImage artifact missing — build-appimage.sh failed upstream" >&2
+          cp artifacts/build-windows/SingularityMC-Installer.exe release/
+          if [ ! -f artifacts/build-linux/SingularityMC-Installer.AppImage ]; then
+              echo "::error::Linux AppImage missing — build-appimage.sh failed upstream" >&2
               exit 1
           fi
-          cp artifacts/build-linux/SingularityMC-*.AppImage release/
+          cp artifacts/build-linux/SingularityMC-Installer.AppImage release/
 
           echo "--- Release assets ($(ls release/ | wc -l) files) ---"
           ls -lah release/
