@@ -146,14 +146,58 @@ jobs:
         working-directory: auto-update
         run: cargo build --release
 
+      # Task 7: pack launcher + runtime w 2 tarballe per OS (deterministic
+      # tar flags — identyczne source = identyczny sha256). Zastępuje
+      # legacy per-file copy z OS prefix convention.
+      - name: Pack launcher + JRE tarballs
+        shell: bash
+        run: |
+          mkdir -p release
+          chmod +x scripts/copy-release-files.sh
+          bash scripts/copy-release-files.sh \
+              singularity-launcher/build/compose/binaries/main/app/SingularityMC \
+              release \
+              ${{ matrix.os_suffix }}
+
+      # Copy auto-update binary pod canonical nazwę (asset naming immutable
+      # — patrz project_release_asset_naming_immutable memory rule).
+      # `auto_update_bin` matrix var = `singularitymc-auto-update.exe`
+      # (Windows) / `singularitymc-auto-update` (Linux) — renaming na
+      # `auto-update-<os>[.exe]` matching manifest URL pattern.
+      - name: Copy auto-update binary (canonical name)
+        shell: bash
+        run: |
+          SRC="auto-update/target/release/${{ matrix.auto_update_bin }}"
+          DEST="release/auto-update-${{ matrix.os_suffix }}${{ matrix.exe_ext }}"
+          cp "$SRC" "$DEST"
+          ls -lh "$DEST"
+
+      # Read auto-update/Cargo.toml [package].version — needed jako arg
+      # dla generate-manifest (AutoUpdatePackage.version field).
+      # grep + sed wystarczy (Cargo.toml format stabilny + feedback rule
+      # wymusza manual bump więc string parsing OK).
+      - name: Read auto-update Cargo version
+        shell: bash
+        run: |
+          VERSION_AU=$(grep '^version' auto-update/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "AUTO_UPDATE_VERSION=$VERSION_AU" >> "$GITHUB_ENV"
+          echo "auto-update Cargo.toml version: $VERSION_AU"
+
+      # Task 6: generate manifest-<os>.json z new 7-arg signature.
+      # sha256 + size per bundle liczone streaming z already-packed
+      # tarballi (i auto-update binary).
       - name: Generate manifest
         shell: bash
         run: |
           kotlin scripts/generate-manifest.main.kts \
-              singularity-launcher/build/compose/binaries/main/app/SingularityMC \
+              release/launcher-${{ matrix.os_suffix }}.tar.gz \
+              release/jre-${{ matrix.os_suffix }}.tar.gz \
+              release/auto-update-${{ matrix.os_suffix }}${{ matrix.exe_ext }} \
               ${{ matrix.os_suffix }} \
               ${{ env.VERSION }} \
-              manifest-${{ matrix.os_suffix }}.json
+              ${{ env.AUTO_UPDATE_VERSION }} \
+              release/manifest-${{ matrix.os_suffix }}.json
+          cat release/manifest-${{ matrix.os_suffix }}.json
 
       - name: Build Windows installer
         if: matrix.os == 'windows-latest'
@@ -164,16 +208,20 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: bash scripts/build-appimage.sh ${{ env.VERSION }}
 
+      # Upload: tylko ~5 assetów per OS (było ~250). Release job downloaduje
+      # i bezpośrednio wrzuca do GitHub Release — bez ponownego copy-release-files
+      # (tamto było legacy per-file convention).
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.os_suffix }}
           path: |
+            release/launcher-${{ matrix.os_suffix }}.tar.gz
+            release/jre-${{ matrix.os_suffix }}.tar.gz
+            release/auto-update-${{ matrix.os_suffix }}${{ matrix.exe_ext }}
+            release/manifest-${{ matrix.os_suffix }}.json
             installer/SingularityMC-Setup-*.exe
             installer/SingularityMC-*.AppImage
-            manifest-${{ matrix.os_suffix }}.json
-            auto-update/target/release/${{ matrix.auto_update_bin }}
-            singularity-launcher/build/compose/binaries/main/app/SingularityMC/**
           retention-days: 30
 
   release:
@@ -200,49 +248,58 @@ jobs:
 
       - name: Prepare release assets
         shell: bash
-        # set -e + explicit guards — żaden krok nie swallowa failure
-        # via `|| true`. Gdy upstream matrix job build-windows/-linux
-        # nie wyprodukował installera (np. iscc wysypał się z niezielonym
-        # dependency), release nie idzie dalej z niekompletnym artifactem.
+        # set -e + explicit guards — żaden krok nie swallowa failure.
+        # Nowy 3-package model: ~5 assetów per OS (było ~250 per-file).
+        # Matrix build step już pack'uje i nazywa assety canonicznie —
+        # release job tylko kopiuje z artifacts/ do release/.
         run: |
           set -euo pipefail
           mkdir -p release/
-          # Installer per OS — sprawdź że istnieje PRZED cp. `ls ... >/dev/null`
-          # jako glob-exists test; bez `|| true` exit 1 wysadzi release job.
-          if ! ls artifacts/build-windows/installer/SingularityMC-Setup-*.exe >/dev/null 2>&1; then
-            echo "::error::Windows installer artifact missing — iscc failed upstream or path drift" >&2
-            exit 1
+
+          # Per-OS bundles (tarballe + auto-update binary + manifest).
+          # Każdy z matrix build step. Canonical naming IMMUTABLE —
+          # hardcoded w installer Pascal + AppRun shell.
+          for OS in windows linux; do
+              for ASSET in launcher-$OS.tar.gz jre-$OS.tar.gz manifest-$OS.json; do
+                  SRC="artifacts/build-$OS/$ASSET"
+                  if [ ! -f "$SRC" ]; then
+                      echo "::error::missing $SRC — upstream build-$OS job failed" >&2
+                      exit 1
+                  fi
+                  cp "$SRC" release/
+              done
+          done
+
+          # Auto-update binaries (per-OS rename już done w matrix).
+          if [ ! -f artifacts/build-windows/auto-update-windows.exe ]; then
+              echo "::error::missing auto-update-windows.exe" >&2
+              exit 1
           fi
-          cp artifacts/build-windows/installer/SingularityMC-Setup-*.exe release/
-          if ! ls artifacts/build-linux/installer/SingularityMC-*.AppImage >/dev/null 2>&1; then
-            echo "::error::Linux AppImage artifact missing — build-appimage.sh failed upstream" >&2
-            exit 1
+          cp artifacts/build-windows/auto-update-windows.exe release/
+          if [ ! -f artifacts/build-linux/auto-update-linux ]; then
+              echo "::error::missing auto-update-linux" >&2
+              exit 1
           fi
-          cp artifacts/build-linux/installer/SingularityMC-*.AppImage release/
-          # Per-OS manifests — brak guardów bo ścieżka stała, a ewentualny
-          # brak to sygnał że `kotlin scripts/generate-manifest...` failed
-          # (i wtedy upstream job i tak powinien być czerwony).
-          cp artifacts/build-windows/manifest-windows.json release/
-          cp artifacts/build-linux/manifest-linux.json release/
-          # Auto-update binaries per OS (re-named z `singularitymc-` prefix
-          # usuniętym, dopisanym OS suffix żeby user nie pobierał złej arch).
-          cp artifacts/build-windows/auto-update/target/release/singularitymc-auto-update.exe release/auto-update-windows.exe
-          cp artifacts/build-linux/auto-update/target/release/singularitymc-auto-update release/auto-update-linux
-          # Per-file launcher assets — OS-prefix `windows`/`linux` MUSI być
-          # dokładnie tą samą wartością co osSuffix przekazywany do
-          # generate-manifest.main.kts (manifest URL pattern: $os-$filename).
-          # Poprzednia wersja użyła `win` tu + `windows` w Kotlin → 404
-          # każdego OS-specific download.
-          chmod +x scripts/copy-release-files.sh
-          bash scripts/copy-release-files.sh artifacts/build-windows/singularity-launcher/build/compose/binaries/main/app/SingularityMC release/ windows
-          bash scripts/copy-release-files.sh artifacts/build-linux/singularity-launcher/build/compose/binaries/main/app/SingularityMC release/ linux
-          echo "--- Release assets ---"
-          # `|| true` — z `set -euo pipefail` na górze step-a, `ls | head
-          # -40` wybucha EPIPE gdy release/ ma >40 plików: head kończy
-          # się OK, ls próbuje pisać dalej, dostaje broken pipe, exit
-          # ≠0, pipefail zwraca to jako exit step-a. Debug print nie ma
-          # prawa wysadzać builda, stąd tolerancja failure tu.
-          ls -lah release/ | head -40 || true
+          cp artifacts/build-linux/auto-update-linux release/
+
+          # Installer (Windows) + AppImage (Linux) — user-facing entry points.
+          # Patrz project_installer_hash_stability memory rule — installer
+          # hash MUSI być stały. Task 10 + Task 11 czynią installer universal
+          # (bez wersji w nazwie). Do tego czasu release ma wersjonowaną
+          # nazwę (tymczasowe, zmienia się w Task 10).
+          if ! ls artifacts/build-windows/SingularityMC-Setup-*.exe >/dev/null 2>&1; then
+              echo "::error::Windows installer artifact missing — iscc failed upstream" >&2
+              exit 1
+          fi
+          cp artifacts/build-windows/SingularityMC-Setup-*.exe release/
+          if ! ls artifacts/build-linux/SingularityMC-*.AppImage >/dev/null 2>&1; then
+              echo "::error::Linux AppImage artifact missing — build-appimage.sh failed upstream" >&2
+              exit 1
+          fi
+          cp artifacts/build-linux/SingularityMC-*.AppImage release/
+
+          echo "--- Release assets ($(ls release/ | wc -l) files) ---"
+          ls -lah release/
           echo "--- Total ---"
           du -sh release/
 
