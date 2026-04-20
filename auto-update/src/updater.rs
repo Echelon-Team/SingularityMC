@@ -1,787 +1,540 @@
-//! File updater — apply downloaded files to `install_dir` with per-file
-//! backup, rollback on mid-swap failure, and post-swap orphan cleanup.
+//! Bundle-based updater: sha256 compare, download coordination, backup,
+//! extract, rollback. Zastępuje per-file flow z v1.0.x (`swap_files` +
+//! `cleanup_orphans` + `copy_tree_recursive`) — patrz commit 23f2960 oraz
+//! spec §4-§6.
 //!
-//! **Flow per file:**
-//! 1. Atomic-copy the existing target (if any) to the versioned backup dir
-//!    (`File-Backups/pre-update-v{old_version}-{unix_ts}/{relative_path}`).
-//!    Atomic-copy streams through a sibling tmp + fsync + rename so a crash
-//!    never leaves a partial backup file that would masquerade as valid.
-//! 2. Atomic-rename the downloaded tmp file over the target with bounded
-//!    retry on `PermissionDenied` (transient AV/EDR locks on Windows).
-//!    Falls back to copy+remove if the rename crosses filesystems.
+//! **Flow per update (orchestrated przez `app.rs::process_release`):**
+//! 1. Fetch remote manifest (`Manifest::parse`).
+//! 2. Load local manifest (`Manifest::read_local` → `Option<Manifest>`).
+//! 3. [`decide_update`] compare per-package:
+//!    - launcher: sha256 remote vs local → download if different
+//!    - jre: sha256 remote vs local → download if different
+//!    - auto-update: version remote vs local (Cargo.toml bump controlled)
+//! 4. Download required paczki do `install_dir/tmp/` (downloader.rs).
+//! 5. [`verify_sha256`] każdej pobranej paczki przed extract.
+//! 6. Backup: [`backup_launcher`] / [`backup_runtime`] — rename
+//!    `install_dir/launcher/` → `launcher.old/`, analogicznie `runtime/`.
+//! 7. [`extract_launcher_bundle`] / [`extract_jre_bundle`] — tar.gz unpack.
+//! 8. Update `install_dir/local-manifest.json` (`Manifest::write_local`).
+//! 9. Spawn launcher (launcher.rs alive flag handshake).
+//! 10. Po pomyślnym launch → [`cleanup_backups`] (usuń `.old/`).
+//!     Na crash → [`rollback_launcher`] / [`rollback_runtime`] (rename back).
 //!
-//! **Rollback semantics:** if any file in the batch fails, the already-
-//! swapped files are restored from their backups (fresh installs without a
-//! backup are deleted). Rollback is best-effort: per-file failures are
-//! recorded and returned in a composite [`UpdaterError::SwapFailed`] so the
-//! state machine (Task 2.11) can distinguish "clean rollback to pre-update
-//! state" from "partial rollback — manual intervention needed" rather than
-//! both collapsing into a generic swap failure.
-//!
-//! **Orphan cleanup:** files present in the OLD manifest but absent from
-//! the NEW one (deleted upstream) are removed after a successful swap.
-//!
-//! **Backup retention:** `cleanup_old_backups(n)` keeps the N most recent
-//! `pre-update-*` directories. Timestamps embedded in directory names
-//! (unix seconds) make lexicographic sort deterministic across filesystems
-//! — no reliance on platform-variable modtime granularity (NTFS 100ns,
-//! FAT32 2s, tmpfs ns).
-//!
-//! **Durability caveats (documented for Task 2.11):** `swap_files` is NOT
-//! journaled — a process kill mid-batch leaves some files swapped + some
-//! pending, and the caller's `write_local_manifest` still points at the
-//! old version. State machine should either hash-verify every manifest
-//! file on startup, or write a `.in-progress` sentinel at swap start
-//! cleared on success.
+//! **Partial extract contract:** `extract_tar_gz` może fail mid-way
+//! zostawiając częściowo wypakowane pliki w target. W naszym flow target
+//! jest fresh (po rename do `.old/`), więc residue = partial new state.
+//! Na fail: jawny cleanup target dir PRZED rollback (inaczej rollback
+//! rename z `.old/` → target dostanie dir-already-exists error).
 
-use crate::manifest::{FileEntry, Manifest};
-use crate::{util, Result, UpdaterError, Version};
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::extract::extract_tar_gz;
+use crate::manifest::Manifest;
+use crate::{Result, Sha256, UpdaterError};
+use std::fs;
+use std::path::Path;
 
-/// Number of `pre-update-*` backup snapshots retained by default.
-pub const DEFAULT_KEEP_BACKUPS: usize = 3;
+/// Subdirectory names w install_dir. Stałe żeby literały nie rozjeżdżały
+/// się między updater.rs / launcher.rs / main.rs / installer .iss.
+pub const LAUNCHER_DIR: &str = "launcher";
+pub const RUNTIME_DIR: &str = "runtime";
+pub const LAUNCHER_OLD_DIR: &str = "launcher.old";
+pub const RUNTIME_OLD_DIR: &str = "runtime.old";
+/// Tmp dir dla in-progress download'ów. Cleanupowany na success.
+/// Uninstaller (.iss) usuwa go jeśli został po crash.
+pub const TMP_DIR: &str = "tmp";
 
-/// Convenience wrapper — invoke [`Updater::restore_from_latest_backup`]
-/// without constructing an `Updater` explicitly. Used by `main.rs` from
-/// the crash-loop recovery path where the caller just has `install_dir`
-/// and doesn't need the rest of the `Updater` API.
-pub fn perform_launcher_rollback(install_dir: &Path) -> Result<PathBuf> {
-    Updater::new(install_dir).restore_from_latest_backup()
+/// Decyzja update per paczka. Pola `*_needed: bool` — skipować download
+/// gdy lokalna wersja identyczna z remote (sha256 dla launcher/jre,
+/// version dla auto-update).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateDecision {
+    pub launcher_needed: bool,
+    pub jre_needed: bool,
+    pub auto_update_needed: bool,
 }
 
-/// Record of one successful swap, tracked for rollback. `backup = None`
-/// means the destination was a fresh install (no prior file to restore);
-/// rollback deletes the destination to restore that state. The `Option`
-/// encodes the conditional-validity invariant structurally — consumers
-/// `match` on backup, not on a sidecar `was_preexisting` bool.
-#[derive(Debug)]
-struct SwappedFile {
-    dest: PathBuf,
-    backup: Option<PathBuf>,
+impl UpdateDecision {
+    /// `true` gdy cokolwiek wymaga pobrania. `false` → skip całego update
+    /// (lokal identyczny z remote, spawn launcher od razu).
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.launcher_needed || self.jre_needed || self.auto_update_needed
+    }
 }
 
-/// Applies downloaded files to an install directory with backup + rollback
-/// + orphan cleanup.
-#[derive(Debug)]
-pub struct Updater<'a> {
-    install_dir: &'a Path,
-    backup_dir: PathBuf,
+/// Decyduje co pobrać na podstawie remote manifest vs local snapshot.
+///
+/// - `local = None` (fresh install, brak `local-manifest.json`) → all three needed.
+/// - `local = Some(m)` → per-package compare: sha256 dla launcher/jre
+///   (deterministic tar = same sha means same content), version dla
+///   auto-update (sha nie jest deterministic bo Rust rebuild timestamps).
+#[must_use]
+pub fn decide_update(remote: &Manifest, local: Option<&Manifest>) -> UpdateDecision {
+    match local {
+        None => UpdateDecision {
+            launcher_needed: true,
+            jre_needed: true,
+            auto_update_needed: true,
+        },
+        Some(l) => UpdateDecision {
+            launcher_needed: l.launcher.sha256 != remote.launcher.sha256,
+            jre_needed: l.jre.sha256 != remote.jre.sha256,
+            auto_update_needed: l.auto_update.version != remote.auto_update.version,
+        },
+    }
 }
 
-impl<'a> Updater<'a> {
-    pub fn new(install_dir: &'a Path) -> Self {
-        let backup_dir = install_dir.join("File-Backups");
-        Self {
-            install_dir,
-            backup_dir,
+/// Sprawdza czy sha256 lokalnego pliku matches oczekiwanego. Streaming —
+/// nie ładuje całego pliku do pamięci (paczki bywają >30 MB).
+/// Zwraca Err dla missing file, I/O fail, lub hash mismatch.
+pub fn verify_sha256(path: &Path, expected: &Sha256) -> Result<()> {
+    let file = fs::File::open(path).map_err(UpdaterError::Io)?;
+    let mut reader = std::io::BufReader::new(file);
+    let ok = expected.verify_reader(&mut reader)?;
+    if !ok {
+        return Err(UpdaterError::Manifest(format!(
+            "sha256 mismatch for {}: expected {}",
+            path.display(),
+            expected.as_str()
+        )));
+    }
+    Ok(())
+}
+
+/// Backup current `launcher/` → `launcher.old/`. Jeśli `launcher.old/` już
+/// istnieje (poprzedni nieczyszczony backup np. po crash) → usunięty.
+/// Gdy `launcher/` nie istnieje (fresh install) → no-op Ok.
+pub fn backup_launcher(install_dir: &Path) -> Result<()> {
+    backup_dir(install_dir, LAUNCHER_DIR, LAUNCHER_OLD_DIR)
+}
+
+/// Backup current `runtime/` → `runtime.old/`. Semantyka jak
+/// `backup_launcher`.
+pub fn backup_runtime(install_dir: &Path) -> Result<()> {
+    backup_dir(install_dir, RUNTIME_DIR, RUNTIME_OLD_DIR)
+}
+
+fn backup_dir(install_dir: &Path, current: &str, backup: &str) -> Result<()> {
+    let current_path = install_dir.join(current);
+    let backup_path = install_dir.join(backup);
+    if backup_path.exists() {
+        fs::remove_dir_all(&backup_path).map_err(UpdaterError::Io)?;
+    }
+    if current_path.exists() {
+        fs::rename(&current_path, &backup_path).map_err(UpdaterError::Io)?;
+    }
+    Ok(())
+}
+
+/// Rollback: usuń current `launcher/` (half-extracted residue), rename
+/// `launcher.old/` → `launcher/`. Err gdy brak `launcher.old/` (nie
+/// ma czego rollbackować — caller musi zdecydować FatalError lub fresh install).
+pub fn rollback_launcher(install_dir: &Path) -> Result<()> {
+    rollback_dir(install_dir, LAUNCHER_DIR, LAUNCHER_OLD_DIR)
+}
+
+/// Rollback `runtime.old/` → `runtime/`. Semantyka jak `rollback_launcher`.
+pub fn rollback_runtime(install_dir: &Path) -> Result<()> {
+    rollback_dir(install_dir, RUNTIME_DIR, RUNTIME_OLD_DIR)
+}
+
+fn rollback_dir(install_dir: &Path, current: &str, backup: &str) -> Result<()> {
+    let current_path = install_dir.join(current);
+    let backup_path = install_dir.join(backup);
+    if !backup_path.exists() {
+        return Err(UpdaterError::Manifest(format!(
+            "cannot rollback: no {} backup at {}",
+            backup,
+            backup_path.display()
+        )));
+    }
+    if current_path.exists() {
+        fs::remove_dir_all(&current_path).map_err(UpdaterError::Io)?;
+    }
+    fs::rename(&backup_path, &current_path).map_err(UpdaterError::Io)?;
+    Ok(())
+}
+
+/// Cleanup `.old/` backupy po potwierdzeniu że nowa wersja działa
+/// (alive flag detected w launcher.rs). Idempotent — no-op gdy dir brak.
+pub fn cleanup_backups(install_dir: &Path) -> Result<()> {
+    for dir in [LAUNCHER_OLD_DIR, RUNTIME_OLD_DIR] {
+        let path = install_dir.join(dir);
+        if path.exists() {
+            fs::remove_dir_all(&path).map_err(UpdaterError::Io)?;
         }
     }
+    Ok(())
+}
 
-    /// Swap each `(FileEntry, tmp_path)` pair into the install directory,
-    /// backing up the original to a timestamped snapshot dir.
-    ///
-    /// Empty `downloads` is a valid no-op; no backup directory is created.
-    ///
-    /// On any failure mid-sequence: rollback is attempted for every
-    /// already-swapped file. If rollback itself fully succeeds, the
-    /// ORIGINAL swap error is propagated. If rollback has per-file
-    /// failures, [`UpdaterError::SwapFailed`] wraps both the original
-    /// error and the list of rollback failures so the caller (Task 2.11)
-    /// can distinguish recoverable from unrecoverable outcomes.
-    /// Swap downloaded files into `install_dir`, backing up any existing
-    /// copies under `File-Backups/pre-update-v<old>-<ts>/`. Pass `None`
-    /// for `old_version` on a first-run/clean install — the snapshot
-    /// directory is then labelled `pre-update-fresh-<ts>/`, which avoids
-    /// a misleading `"0.0.0"` sentinel in the folder name.
-    pub fn swap_files(
-        &self,
-        downloads: &[(FileEntry, PathBuf)],
-        old_version: Option<&Version>,
-    ) -> Result<()> {
-        if downloads.is_empty() {
-            return Ok(());
-        }
+/// Extract launcher bundle tar.gz z `tmp/launcher.tar.gz` do
+/// `install_dir/launcher/`. Caller odpowiedzialny za `backup_launcher`
+/// przed wywołaniem (target jest fresh/nieistniejący po rename do `.old/`).
+pub fn extract_launcher_bundle(tmp_archive: &Path, install_dir: &Path) -> Result<()> {
+    let target = install_dir.join(LAUNCHER_DIR);
+    extract_tar_gz(tmp_archive, &target)
+}
 
-        let pre_update_dir = self.backup_dir.join(Self::snapshot_dir_name(old_version));
-        std::fs::create_dir_all(&pre_update_dir)?;
+/// Extract jre bundle tar.gz z `tmp/jre-<os>.tar.gz` do
+/// `install_dir/runtime/`. Analogiczne do `extract_launcher_bundle`.
+pub fn extract_jre_bundle(tmp_archive: &Path, install_dir: &Path) -> Result<()> {
+    let target = install_dir.join(RUNTIME_DIR);
+    extract_tar_gz(tmp_archive, &target)
+}
 
-        let mut swapped: Vec<SwappedFile> = Vec::with_capacity(downloads.len());
-
-        for (file, temp_path) in downloads {
-            let dest = file.path.to_install_path(self.install_dir);
-            let backup_path = pre_update_dir.join(file.path.as_str());
-            let was_preexisting = dest.exists();
-
-            match Self::do_swap(&dest, temp_path, &backup_path, was_preexisting) {
-                Ok(()) => {
-                    swapped.push(SwappedFile {
-                        dest,
-                        backup: if was_preexisting {
-                            Some(backup_path)
-                        } else {
-                            None
-                        },
-                    });
-                }
-                Err(e) => {
-                    let rollback_failures = self.rollback_collect(&swapped);
-                    return Err(if rollback_failures.is_empty() {
-                        e
-                    } else {
-                        UpdaterError::SwapFailed {
-                            original: Box::new(e),
-                            rollback_failures,
-                        }
-                    });
-                }
-            }
-        }
-        Ok(())
+/// Top-level rollback convenience — wywołuje `rollback_launcher` +
+/// `rollback_runtime` (ten drugi tolerowany gdy brak `.old/` backup
+/// bo ostatni update mógł być launcher-only). Używane przez main.rs
+/// w crash-loop recovery path gdzie caller nie chce rozróżniać
+/// launcher/runtime. Zastępuje legacy `Updater::restore_from_latest_backup`.
+pub fn perform_launcher_rollback(install_dir: &Path) -> Result<()> {
+    rollback_launcher(install_dir)?;
+    // runtime.old może nie istnieć jeśli ostatni update tylko launcher
+    // wymagał pobrania (jre sha unchanged). Tolerate missing runtime backup.
+    let runtime_backup = install_dir.join(RUNTIME_OLD_DIR);
+    if runtime_backup.exists() {
+        rollback_runtime(install_dir)?;
     }
+    Ok(())
+}
 
-    /// Backup dir name embedding the old version AND a unix timestamp so
-    /// collisions (repeated updates from the same old version) are
-    /// avoided — AND so lexicographic sort gives reliable
-    /// newest-to-oldest ordering across filesystems.
-    ///
-    /// `None` produces `pre-update-fresh-<ts>/` (first-run install with
-    /// nothing on disk to back up). That branch is dead weight for the
-    /// rollback path — no pre-existing files are ever found, so nothing
-    /// gets copied into the backup — but keeping the directory around
-    /// gives log readers a single consistent "what happened" marker.
-    fn snapshot_dir_name(old_version: Option<&Version>) -> String {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        match old_version {
-            Some(v) => format!("pre-update-v{v}-{ts}"),
-            None => format!("pre-update-fresh-{ts}"),
-        }
+/// Cleanup `tmp/` po update. Idempotent — no-op gdy dir brak.
+/// Używany po successful extract + install (żeby nie zajmować miejsca
+/// na dysku z pobranymi paczkami).
+pub fn cleanup_tmp(install_dir: &Path) -> Result<()> {
+    let path = install_dir.join(TMP_DIR);
+    if path.exists() {
+        fs::remove_dir_all(&path).map_err(UpdaterError::Io)?;
     }
+    Ok(())
+}
 
-    fn do_swap(
-        dest: &Path,
-        temp: &Path,
-        backup: &Path,
-        was_preexisting: bool,
-    ) -> Result<()> {
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        if let Some(parent) = backup.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        if was_preexisting {
-            // Atomic copy so a mid-copy crash can never produce a
-            // half-written backup that a later rollback might restore
-            // over an intact dest.
-            util::atomic_copy(dest, backup)?;
-        }
-
-        // Atomic rename with AV/EDR retry. Falls back to copy+remove if
-        // the rename crosses filesystems (EXDEV on Linux).
-        if let Err(rename_err) = util::rename_with_retry(temp, dest) {
-            log::debug!(
-                "rename {} -> {} failed ({rename_err}); falling back to copy+remove",
-                temp.display(),
-                dest.display()
-            );
-            std::fs::copy(temp, dest)?;
-            // Swap semantics: at this point dest has the new content and
-            // the install is correct. A failed remove only leaks a tmp
-            // file — log-warn and return Ok so rollback is NOT triggered.
-            if let Err(e) = std::fs::remove_file(temp) {
-                log::warn!(
-                    "tmp cleanup failed after cross-fs swap of {} (harmless leak): {e}",
-                    temp.display()
-                );
-            }
-        }
-        Ok(())
+/// Cleanup half-extracted target po failed extract. Wywoływane przed
+/// rollback, żeby rename `launcher.old/` → `launcher/` nie fail z
+/// AlreadyExists. Idempotent.
+pub fn cleanup_partial_extract(install_dir: &Path, which: &str) -> Result<()> {
+    let path = install_dir.join(which);
+    if path.exists() {
+        fs::remove_dir_all(&path).map_err(UpdaterError::Io)?;
     }
-
-    /// Rollback iterates in reverse (LIFO unwinding) and collects per-file
-    /// failure messages. Returns empty `Vec` on a fully-clean rollback;
-    /// non-empty indicates the caller should surface `SwapFailed`.
-    fn rollback_collect(&self, swapped: &[SwappedFile]) -> Vec<String> {
-        let mut failures = Vec::new();
-        for sf in swapped.iter().rev() {
-            match &sf.backup {
-                Some(backup) => {
-                    if let Err(e) = util::atomic_copy(backup, &sf.dest) {
-                        let msg = format!(
-                            "rollback restore of {} from {}: {e}",
-                            sf.dest.display(),
-                            backup.display()
-                        );
-                        log::warn!("{msg}");
-                        failures.push(msg);
-                    }
-                }
-                None => {
-                    if let Err(e) = std::fs::remove_file(&sf.dest) {
-                        let msg = format!(
-                            "rollback delete of fresh-install file {}: {e}",
-                            sf.dest.display()
-                        );
-                        log::warn!("{msg}");
-                        failures.push(msg);
-                    }
-                }
-            }
-        }
-        failures
-    }
-
-    /// Remove files that were in `old` but absent from `new`. Best-effort —
-    /// individual removal failures are logged but not propagated.
-    pub fn cleanup_orphans(&self, old: &Manifest, new: &Manifest) {
-        let new_paths: HashSet<&str> = new.files.iter().map(|f| f.path.as_str()).collect();
-        for old_file in &old.files {
-            if new_paths.contains(old_file.path.as_str()) {
-                continue;
-            }
-            let orphan = old_file.path.to_install_path(self.install_dir);
-            if !orphan.exists() {
-                continue;
-            }
-            if let Err(e) = std::fs::remove_file(&orphan) {
-                log::warn!(
-                    "orphan cleanup: failed to remove {}: {e}",
-                    orphan.display()
-                );
-            }
-        }
-    }
-
-    /// Persist the new manifest as `local-manifest.json`.
-    pub fn write_local_manifest(&self, manifest: &Manifest) -> Result<()> {
-        crate::manifest::save_local(self.install_dir, manifest)
-    }
-
-    /// Write `version.txt` atomically for debug-friendly inspection.
-    pub fn write_version_file(&self, version: &Version) -> Result<()> {
-        let path = self.install_dir.join("version.txt");
-        util::atomic_write_bytes(&path, version.as_str().as_bytes())
-    }
-
-    /// Copy files from the newest `File-Backups/pre-update-*` snapshot
-    /// back over `install_dir` — the self-healing rollback target for the
-    /// launcher crash-loop detector (spec §8.1). Returns the path of the
-    /// snapshot used so the caller can log / forensics.
-    ///
-    /// Lexicographic sort on timestamp-embedded snapshot names gives
-    /// deterministic newest-first selection; same ordering used by
-    /// [`Self::cleanup_old_backups`] but traversed in opposite direction.
-    ///
-    /// Does NOT delete `local-manifest.json` or `version.txt` — those are
-    /// left as-is so the next auto-update flow's `diff_manifests` can
-    /// work out what to fix. If the remote manifest is itself what broke
-    /// the launcher (hence the rollback), `main.rs` is responsible for
-    /// gating the next update attempt — out of scope for this function
-    /// which performs the pure copy.
-    ///
-    /// Copy uses [`util::atomic_copy`] per file so a mid-rollback crash
-    /// never leaves half-written restored files; worst case, the next
-    /// rollback attempt re-copies cleanly (idempotent on file content).
-    pub fn restore_from_latest_backup(&self) -> Result<PathBuf> {
-        if !self.backup_dir.is_dir() {
-            return Err(UpdaterError::NotFound(format!(
-                "File-Backups directory does not exist at {}",
-                self.backup_dir.display()
-            )));
-        }
-
-        let mut snapshots: Vec<PathBuf> = std::fs::read_dir(&self.backup_dir)?
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_type().ok().is_some_and(|t| t.is_dir())
-                    && e.file_name()
-                        .to_string_lossy()
-                        .starts_with("pre-update-")
-            })
-            .map(|e| e.path())
-            .collect();
-        snapshots.sort();
-
-        let Some(latest) = snapshots.last() else {
-            return Err(UpdaterError::NotFound(format!(
-                "no pre-update-* snapshots in {}",
-                self.backup_dir.display()
-            )));
-        };
-        log::warn!(
-            "restoring launcher files from backup snapshot: {}",
-            latest.display()
-        );
-        Self::copy_tree_recursive(latest, self.install_dir)?;
-        Ok(latest.clone())
-    }
-
-    /// Recursively copy `src_root` tree into `dst_root`, preserving
-    /// relative paths. Files are atomic-copied (sibling tmp + fsync +
-    /// rename) so interruption cannot leave partial reconstructions.
-    /// Directories are created lazily. Symlinks / device files /
-    /// non-regular entries are skipped (none expected in a launcher
-    /// snapshot; silent skip avoids spurious errors on exotic FS).
-    fn copy_tree_recursive(src_root: &Path, dst_root: &Path) -> Result<()> {
-        for entry in std::fs::read_dir(src_root)? {
-            let entry = entry?;
-            let src = entry.path();
-            let dst = dst_root.join(entry.file_name());
-            let ftype = entry.file_type()?;
-            if ftype.is_dir() {
-                std::fs::create_dir_all(&dst)?;
-                Self::copy_tree_recursive(&src, &dst)?;
-            } else if ftype.is_file() {
-                if let Some(parent) = dst.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                util::atomic_copy(&src, &dst)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Prune `File-Backups/pre-update-*` snapshots. Lexicographic sort on
-    /// timestamp-embedded names gives reliable newest-last ordering; older
-    /// snapshots are deleted first. Entries with unreadable metadata are
-    /// skipped (logged) rather than sorted to UNIX_EPOCH — avoids the
-    /// "corrupted-metadata causes newest backup to be deleted" footgun.
-    pub fn cleanup_old_backups(&self, keep_count: usize) -> Result<()> {
-        if !self.backup_dir.exists() {
-            return Ok(());
-        }
-        let mut pre_updates: Vec<_> = std::fs::read_dir(&self.backup_dir)?
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("pre-update-")
-            })
-            .collect();
-        // Lexicographic sort on name — since names embed unix-seconds
-        // timestamps, ascending order == oldest-first == delete-first.
-        pre_updates.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-        if pre_updates.len() > keep_count {
-            let to_remove = pre_updates.len() - keep_count;
-            for entry in pre_updates.iter().take(to_remove) {
-                if let Err(e) = std::fs::remove_dir_all(entry.path()) {
-                    log::warn!(
-                        "failed to remove old backup {}: {e}",
-                        entry.path().display()
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ManifestPath, OsTarget, Sha256};
-    use tempfile::TempDir;
+    use crate::manifest::{AutoUpdatePackage, Manifest, OsTarget, PackageEntry};
+    use crate::{ManifestPath, Version};
+    use tempfile::tempdir;
 
-    const HASH: &str =
-        "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0";
-
-    fn file_entry(rel: &str) -> FileEntry {
-        FileEntry {
-            path: ManifestPath::parse(rel).unwrap(),
-            url: "https://example.com".to_string(),
-            size: 3,
-            sha256: Sha256::parse(HASH).unwrap(),
-        }
-    }
-
-    fn tmp_file(dir: &TempDir, name: &str, bytes: &[u8]) -> PathBuf {
-        let p = dir.path().join(name);
-        std::fs::write(&p, bytes).unwrap();
-        p
-    }
-
-    fn manifest_with(files: Vec<FileEntry>, version: &str) -> Manifest {
+    fn dummy_manifest(launcher_sha_hex: &str, jre_sha_hex: &str, au_version: &str) -> Manifest {
+        // Padding do 64 hex chars.
+        let pad = |hex: &str| -> String { format!("{hex:0>64}") };
         Manifest {
-            version: Version::parse(version).unwrap(),
+            version: Version::parse("0.4.7").unwrap(),
             os: OsTarget::Windows,
-            released_at: "2026-04-15T10:00:00Z".to_string(),
-            min_auto_update_version: Version::parse("0.1.0").unwrap(),
-            launcher_executable: ManifestPath::parse("launcher/app.exe").unwrap(),
+            released_at: "2026-04-20T12:00:00Z".into(),
+            min_auto_update_version: Version::parse("1.0.0").unwrap(),
+            launcher_executable: ManifestPath::parse("launcher/SingularityMC.exe").unwrap(),
             changelog: String::new(),
-            files,
+            launcher: PackageEntry {
+                url: "https://example.com/launcher.tar.gz".into(),
+                sha256: Sha256::parse(&pad(launcher_sha_hex)).unwrap(),
+                size: 100,
+            },
+            jre: PackageEntry {
+                url: "https://example.com/jre.tar.gz".into(),
+                sha256: Sha256::parse(&pad(jre_sha_hex)).unwrap(),
+                size: 200,
+            },
+            auto_update: AutoUpdatePackage {
+                url: "https://example.com/au.exe".into(),
+                sha256: Sha256::parse(&pad("ff")).unwrap(),
+                size: 50,
+                version: Version::parse(au_version).unwrap(),
+            },
         }
     }
 
-    /// Locate the sole pre-update-* snapshot dir under File-Backups.
-    fn snapshot_dir(install: &Path) -> PathBuf {
-        let bd = install.join("File-Backups");
-        std::fs::read_dir(&bd)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .find(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("pre-update-")
-            })
-            .expect("expected a pre-update snapshot dir")
-            .path()
-    }
-
-    // --- swap_files ---
+    // --- decide_update ---
 
     #[test]
-    fn swap_files_replaces_existing_and_backs_up() {
-        let install = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
+    fn decide_update_fresh_install_all_needed() {
+        let remote = dummy_manifest("1", "2", "1.1.0");
+        let decision = decide_update(&remote, None);
+        assert!(decision.launcher_needed);
+        assert!(decision.jre_needed);
+        assert!(decision.auto_update_needed);
+        assert!(decision.any());
+    }
 
-        std::fs::create_dir_all(install.path().join("launcher")).unwrap();
-        std::fs::write(install.path().join("launcher/a.jar"), b"OLD").unwrap();
+    #[test]
+    fn decide_update_identical_no_change() {
+        let m = dummy_manifest("1", "2", "1.1.0");
+        let decision = decide_update(&m, Some(&m));
+        assert!(!decision.launcher_needed);
+        assert!(!decision.jre_needed);
+        assert!(!decision.auto_update_needed);
+        assert!(!decision.any());
+    }
 
-        let new_tmp = tmp_file(&tmp, "a.jar", b"NEW");
-        Updater::new(install.path())
-            .swap_files(
-                &[(file_entry("launcher/a.jar"), new_tmp)],
-                Some(&Version::parse("1.0.0").unwrap()),
-            )
-            .unwrap();
+    #[test]
+    fn decide_update_only_launcher_changed() {
+        let remote = dummy_manifest("3", "2", "1.1.0");
+        let local = dummy_manifest("1", "2", "1.1.0");
+        let decision = decide_update(&remote, Some(&local));
+        assert!(decision.launcher_needed);
+        assert!(!decision.jre_needed);
+        assert!(!decision.auto_update_needed);
+    }
+
+    #[test]
+    fn decide_update_only_jre_changed() {
+        let remote = dummy_manifest("1", "5", "1.1.0");
+        let local = dummy_manifest("1", "2", "1.1.0");
+        let decision = decide_update(&remote, Some(&local));
+        assert!(!decision.launcher_needed);
+        assert!(decision.jre_needed);
+        assert!(!decision.auto_update_needed);
+    }
+
+    #[test]
+    fn decide_update_only_auto_update_version_bump() {
+        let remote = dummy_manifest("1", "2", "1.2.0");
+        let local = dummy_manifest("1", "2", "1.1.0");
+        let decision = decide_update(&remote, Some(&local));
+        assert!(!decision.launcher_needed);
+        assert!(!decision.jre_needed);
+        assert!(decision.auto_update_needed);
+    }
+
+    // --- verify_sha256 ---
+
+    #[test]
+    fn verify_sha256_passes_for_matching_hash() {
+        use sha2::{Digest, Sha256 as Hasher};
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("file.bin");
+        let content = b"test content 12345";
+        fs::write(&path, content).unwrap();
+
+        let expected_hex = hex::encode(Hasher::digest(content));
+        let expected = Sha256::parse(&expected_hex).unwrap();
+        verify_sha256(&path, &expected).unwrap();
+    }
+
+    #[test]
+    fn verify_sha256_fails_for_mismatch() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("file.bin");
+        fs::write(&path, b"actual content").unwrap();
+
+        let wrong = Sha256::parse(&"a".repeat(64)).unwrap();
+        let err = verify_sha256(&path, &wrong).unwrap_err();
+        assert!(matches!(err, UpdaterError::Manifest(_)));
+    }
+
+    #[test]
+    fn verify_sha256_fails_for_missing_file() {
+        let tmp = tempdir().unwrap();
+        let expected = Sha256::parse(&"a".repeat(64)).unwrap();
+        let err = verify_sha256(&tmp.path().join("missing.bin"), &expected).unwrap_err();
+        assert!(matches!(err, UpdaterError::Io(_)));
+    }
+
+    // --- backup + rollback cycles ---
+
+    #[test]
+    fn backup_then_rollback_launcher_restores_original() {
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        let launcher = install.join(LAUNCHER_DIR);
+        fs::create_dir(&launcher).unwrap();
+        fs::write(launcher.join("marker.txt"), b"original").unwrap();
+
+        backup_launcher(install).unwrap();
+        assert!(!launcher.exists());
+        assert!(install.join(LAUNCHER_OLD_DIR).join("marker.txt").exists());
+
+        // Symuluj nowy launcher zainstalowany (half-extracted residue)
+        fs::create_dir(&launcher).unwrap();
+        fs::write(launcher.join("marker.txt"), b"new").unwrap();
+
+        rollback_launcher(install).unwrap();
+        let restored = fs::read_to_string(launcher.join("marker.txt")).unwrap();
+        assert_eq!(restored, "original");
+        assert!(!install.join(LAUNCHER_OLD_DIR).exists());
+    }
+
+    #[test]
+    fn backup_runtime_and_rollback_cycle() {
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        let runtime = install.join(RUNTIME_DIR);
+        fs::create_dir(&runtime).unwrap();
+        fs::write(runtime.join("jvm.dll"), b"original-jvm").unwrap();
+
+        backup_runtime(install).unwrap();
+        assert!(install.join(RUNTIME_OLD_DIR).join("jvm.dll").exists());
+
+        rollback_runtime(install).unwrap();
+        assert_eq!(
+            fs::read(runtime.join("jvm.dll")).unwrap(),
+            b"original-jvm"
+        );
+    }
+
+    #[test]
+    fn backup_launcher_no_op_when_current_missing() {
+        // Fresh install: launcher/ nie istnieje — backup_launcher nie
+        // powinien fail. Idempotent dla fresh install scenariusza.
+        let tmp = tempdir().unwrap();
+        backup_launcher(tmp.path()).unwrap();
+        assert!(!tmp.path().join(LAUNCHER_OLD_DIR).exists());
+    }
+
+    #[test]
+    fn backup_launcher_removes_stale_backup_before_rename() {
+        // Jeśli .old/ został po crash (cleanup_backups nie zadziałał),
+        // backup_launcher powinien go usunąć przed rename — żeby rename
+        // nie fail z AlreadyExists.
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        fs::create_dir(install.join(LAUNCHER_DIR)).unwrap();
+        fs::write(install.join(LAUNCHER_DIR).join("new.txt"), b"new").unwrap();
+        fs::create_dir(install.join(LAUNCHER_OLD_DIR)).unwrap();
+        fs::write(install.join(LAUNCHER_OLD_DIR).join("stale.txt"), b"stale").unwrap();
+
+        backup_launcher(install).unwrap();
+
+        // .old/ zawiera "new" content (stale usunięty), launcher/ brak
+        assert!(install.join(LAUNCHER_OLD_DIR).join("new.txt").exists());
+        assert!(!install.join(LAUNCHER_OLD_DIR).join("stale.txt").exists());
+        assert!(!install.join(LAUNCHER_DIR).exists());
+    }
+
+    #[test]
+    fn rollback_launcher_errors_when_no_backup() {
+        let tmp = tempdir().unwrap();
+        let err = rollback_launcher(tmp.path()).unwrap_err();
+        assert!(matches!(err, UpdaterError::Manifest(_)));
+    }
+
+    // --- cleanup_backups / cleanup_tmp ---
+
+    #[test]
+    fn cleanup_backups_removes_both_old_dirs() {
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        fs::create_dir(install.join(LAUNCHER_OLD_DIR)).unwrap();
+        fs::create_dir(install.join(RUNTIME_OLD_DIR)).unwrap();
+
+        cleanup_backups(install).unwrap();
+        assert!(!install.join(LAUNCHER_OLD_DIR).exists());
+        assert!(!install.join(RUNTIME_OLD_DIR).exists());
+    }
+
+    #[test]
+    fn cleanup_backups_idempotent_when_nothing_to_cleanup() {
+        let tmp = tempdir().unwrap();
+        cleanup_backups(tmp.path()).unwrap(); // no-op OK
+    }
+
+    #[test]
+    fn cleanup_backups_removes_only_launcher_when_runtime_missing() {
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        fs::create_dir(install.join(LAUNCHER_OLD_DIR)).unwrap();
+
+        cleanup_backups(install).unwrap();
+        assert!(!install.join(LAUNCHER_OLD_DIR).exists());
+    }
+
+    #[test]
+    fn cleanup_tmp_removes_and_is_idempotent() {
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        fs::create_dir(install.join(TMP_DIR)).unwrap();
+        cleanup_tmp(install).unwrap();
+        assert!(!install.join(TMP_DIR).exists());
+        // Second call OK — idempotent.
+        cleanup_tmp(install).unwrap();
+    }
+
+    // --- extract_launcher_bundle / extract_jre_bundle ---
+
+    #[test]
+    fn extract_launcher_bundle_unpacks_to_correct_subdir() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let tmp = tempdir().unwrap();
+        let archive = tmp.path().join("launcher.tar.gz");
+
+        // Build a small tar.gz
+        let file = fs::File::create(&archive).unwrap();
+        let gz = GzEncoder::new(file, Compression::default());
+        let mut builder = tar::Builder::new(gz);
+        let data = b"mock launcher executable";
+        let mut header = tar::Header::new_gnu();
+        header.set_path("SingularityMC.exe").unwrap();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append(&header, &data[..]).unwrap();
+        builder.finish().unwrap();
+        drop(builder); // flush gz
+
+        extract_launcher_bundle(&archive, tmp.path()).unwrap();
+        let target = tmp.path().join(LAUNCHER_DIR).join("SingularityMC.exe");
+        assert!(target.exists());
+        assert_eq!(fs::read(&target).unwrap(), data);
+    }
+
+    // --- perform_launcher_rollback ---
+
+    #[test]
+    fn perform_launcher_rollback_rolls_back_both_when_present() {
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        // Setup: .old dirs present (simulate backup taken)
+        fs::create_dir(install.join(LAUNCHER_OLD_DIR)).unwrap();
+        fs::write(install.join(LAUNCHER_OLD_DIR).join("a.txt"), b"launcher-old").unwrap();
+        fs::create_dir(install.join(RUNTIME_OLD_DIR)).unwrap();
+        fs::write(install.join(RUNTIME_OLD_DIR).join("b.txt"), b"runtime-old").unwrap();
+
+        perform_launcher_rollback(install).unwrap();
 
         assert_eq!(
-            std::fs::read(install.path().join("launcher/a.jar")).unwrap(),
-            b"NEW"
-        );
-        let snap = snapshot_dir(install.path());
-        assert!(snap
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("pre-update-v1.0.0-"));
-        assert_eq!(
-            std::fs::read(snap.join("launcher/a.jar")).unwrap(),
-            b"OLD"
-        );
-    }
-
-    #[test]
-    fn swap_files_handles_fresh_install_without_backup() {
-        let install = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        let new_tmp = tmp_file(&tmp, "b.jar", b"FRESH");
-
-        Updater::new(install.path())
-            .swap_files(
-                &[(file_entry("launcher/b.jar"), new_tmp)],
-                Some(&Version::parse("1.0.0").unwrap()),
-            )
-            .unwrap();
-
-        assert_eq!(
-            std::fs::read(install.path().join("launcher/b.jar")).unwrap(),
-            b"FRESH"
-        );
-        let snap = snapshot_dir(install.path());
-        assert!(!snap.join("launcher/b.jar").exists());
-    }
-
-    #[test]
-    fn swap_files_empty_downloads_is_no_op() {
-        let install = TempDir::new().unwrap();
-        Updater::new(install.path())
-            .swap_files(&[], Some(&Version::parse("1.0.0").unwrap()))
-            .unwrap();
-        // No backup dir created for a no-op swap.
-        assert!(!install.path().join("File-Backups").exists());
-    }
-
-    #[test]
-    fn swap_files_rolls_back_cleanly_restores_original() {
-        // First file swaps OK; second tmp missing → rollback. Rollback must
-        // restore file 1 and bubble up the ORIGINAL error (not SwapFailed).
-        let install = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(install.path().join("launcher")).unwrap();
-        std::fs::write(install.path().join("launcher/a.jar"), b"OLD").unwrap();
-
-        let a_new = tmp_file(&tmp, "a.jar", b"NEW_A");
-        let b_nonexistent = tmp.path().join("does-not-exist.jar");
-
-        let result = Updater::new(install.path()).swap_files(
-            &[
-                (file_entry("launcher/a.jar"), a_new),
-                (file_entry("launcher/b.jar"), b_nonexistent),
-            ],
-            Some(&Version::parse("1.0.0").unwrap()),
-        );
-        assert!(result.is_err());
-        // Clean rollback → original error surfaces, NOT SwapFailed.
-        assert!(
-            !matches!(result, Err(UpdaterError::SwapFailed { .. })),
-            "clean rollback must propagate original error, not wrap in SwapFailed"
+            fs::read(install.join(LAUNCHER_DIR).join("a.txt")).unwrap(),
+            b"launcher-old"
         );
         assert_eq!(
-            std::fs::read(install.path().join("launcher/a.jar")).unwrap(),
-            b"OLD"
+            fs::read(install.join(RUNTIME_DIR).join("b.txt")).unwrap(),
+            b"runtime-old"
         );
     }
 
     #[test]
-    fn swap_rollback_deletes_fresh_install_files() {
-        let install = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        let a_new = tmp_file(&tmp, "a.jar", b"FRESH_A");
-        let b_nonexistent = tmp.path().join("does-not-exist.jar");
+    fn perform_launcher_rollback_tolerates_missing_runtime_old() {
+        // Scenariusz: ostatni update pobierał tylko launcher (jre sha
+        // unchanged), więc runtime.old/ nie był tworzony. Crash counter
+        // rollback powinien jednak rollbackować launcher bez fail
+        // na brakujące runtime backup.
+        let tmp = tempdir().unwrap();
+        let install = tmp.path();
+        fs::create_dir(install.join(LAUNCHER_OLD_DIR)).unwrap();
+        fs::write(install.join(LAUNCHER_OLD_DIR).join("a.txt"), b"launcher-old").unwrap();
 
-        let _ = Updater::new(install.path()).swap_files(
-            &[
-                (file_entry("launcher/a.jar"), a_new),
-                (file_entry("launcher/b.jar"), b_nonexistent),
-            ],
-            Some(&Version::parse("1.0.0").unwrap()),
-        );
-        assert!(!install.path().join("launcher/a.jar").exists());
+        perform_launcher_rollback(install).unwrap();
+        assert!(install.join(LAUNCHER_DIR).join("a.txt").exists());
+        assert!(!install.join(RUNTIME_DIR).exists());
     }
 
     #[test]
-    fn swap_files_fails_at_backup_step_when_backup_parent_exists_as_file() {
-        // Backup target path has a conflicting FILE (not dir) as its
-        // snapshot-dir parent. create_dir_all inside do_swap will fail
-        // with NotADirectory / AlreadyExists → swap error → rollback over
-        // zero prior swaps → clean error surfaces.
-        let install = TempDir::new().unwrap();
-        std::fs::create_dir_all(install.path().join("launcher")).unwrap();
-        std::fs::write(install.path().join("launcher/a.jar"), b"OLD").unwrap();
-
-        // Create a FILE where File-Backups dir would go.
-        std::fs::write(install.path().join("File-Backups"), b"").unwrap();
-
-        let tmp = TempDir::new().unwrap();
-        let a_new = tmp_file(&tmp, "a.jar", b"NEW");
-        let result = Updater::new(install.path()).swap_files(
-            &[(file_entry("launcher/a.jar"), a_new)],
-            Some(&Version::parse("1.0.0").unwrap()),
-        );
-        assert!(matches!(result, Err(UpdaterError::Io(_))));
-        // Original file untouched (swap never started).
-        assert_eq!(
-            std::fs::read(install.path().join("launcher/a.jar")).unwrap(),
-            b"OLD"
-        );
-    }
-
-    // --- cleanup_orphans ---
-
-    #[test]
-    fn cleanup_orphans_removes_files_absent_from_new_manifest() {
-        let install = TempDir::new().unwrap();
-        std::fs::create_dir_all(install.path().join("launcher")).unwrap();
-        std::fs::write(install.path().join("launcher/old.jar"), b"STALE").unwrap();
-        std::fs::write(install.path().join("launcher/kept.jar"), b"KEEP").unwrap();
-
-        let old = manifest_with(
-            vec![file_entry("launcher/old.jar"), file_entry("launcher/kept.jar")],
-            "1.0.0",
-        );
-        let new = manifest_with(vec![file_entry("launcher/kept.jar")], "1.0.1");
-
-        Updater::new(install.path()).cleanup_orphans(&old, &new);
-
-        assert!(!install.path().join("launcher/old.jar").exists());
-        assert!(install.path().join("launcher/kept.jar").exists());
-    }
-
-    #[test]
-    fn cleanup_orphans_tolerates_already_missing_orphans() {
-        let install = TempDir::new().unwrap();
-        let old = manifest_with(vec![file_entry("launcher/old.jar")], "1.0.0");
-        let new = manifest_with(vec![], "1.0.1");
-        Updater::new(install.path()).cleanup_orphans(&old, &new);
-    }
-
-    // --- cleanup_old_backups ---
-
-    #[test]
-    fn cleanup_old_backups_keeps_n_most_recent_by_timestamp_in_name() {
-        // Names embed unix timestamps — lex sort == chronological sort
-        // regardless of filesystem modtime granularity.
-        let install = TempDir::new().unwrap();
-        let bd = install.path().join("File-Backups");
-        std::fs::create_dir_all(&bd).unwrap();
-        for name in [
-            "pre-update-v1-1700000000",
-            "pre-update-v2-1700000100",
-            "pre-update-v3-1700000200",
-        ] {
-            std::fs::create_dir(bd.join(name)).unwrap();
-        }
-        std::fs::create_dir(bd.join("unrelated")).unwrap();
-
-        Updater::new(install.path()).cleanup_old_backups(2).unwrap();
-
-        // Oldest (v1-1700000000) deleted; v2 + v3 retained; unrelated untouched.
-        assert!(!bd.join("pre-update-v1-1700000000").exists());
-        assert!(bd.join("pre-update-v2-1700000100").exists());
-        assert!(bd.join("pre-update-v3-1700000200").exists());
-        assert!(bd.join("unrelated").exists());
-    }
-
-    #[test]
-    fn cleanup_old_backups_no_op_when_dir_missing() {
-        let install = TempDir::new().unwrap();
-        Updater::new(install.path()).cleanup_old_backups(3).unwrap();
-    }
-
-    #[test]
-    fn cleanup_old_backups_keeps_all_when_count_exceeds_total() {
-        let install = TempDir::new().unwrap();
-        let bd = install.path().join("File-Backups");
-        std::fs::create_dir_all(&bd).unwrap();
-        std::fs::create_dir(bd.join("pre-update-v1-1700000000")).unwrap();
-        Updater::new(install.path()).cleanup_old_backups(10).unwrap();
-        assert!(bd.join("pre-update-v1-1700000000").exists());
-    }
-
-    // --- write_version_file + write_local_manifest ---
-
-    #[test]
-    fn write_version_file_writes_atomically() {
-        let install = TempDir::new().unwrap();
-        Updater::new(install.path())
-            .write_version_file(&Version::parse("0.1.0").unwrap())
-            .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(install.path().join("version.txt")).unwrap(),
-            "0.1.0"
-        );
-    }
-
-    #[test]
-    fn write_local_manifest_persists_all_fields() {
-        let install = TempDir::new().unwrap();
-        let m = manifest_with(vec![file_entry("launcher/app.jar")], "0.1.0");
-        Updater::new(install.path()).write_local_manifest(&m).unwrap();
-        let raw = std::fs::read_to_string(install.path().join("local-manifest.json")).unwrap();
-        assert!(raw.contains("\"version\": \"0.1.0\""));
-        // Pin that launcherExecutable round-trips (previously untested).
-        assert!(raw.contains("\"launcher/app.exe\""));
-    }
-
-    // --- snapshot_dir_name ---
-
-    #[test]
-    fn snapshot_dir_name_embeds_version_and_timestamp() {
-        let v = Version::parse("1.2.3").unwrap();
-        let name = Updater::snapshot_dir_name(Some(&v));
-        assert!(name.starts_with("pre-update-v1.2.3-"));
-        // Suffix after "v1.2.3-" is a unix-seconds number; parse to verify.
-        let ts_str = name.rsplit('-').next().unwrap();
-        assert!(ts_str.parse::<u64>().is_ok());
-    }
-
-    #[test]
-    fn snapshot_dir_name_uses_fresh_marker_for_none() {
-        // Replaces the old "0.0.0" sentinel: first-run installs produce
-        // `pre-update-fresh-<ts>/` in the backup directory, which is
-        // unambiguous in log output and leaves the semver namespace
-        // untouched by the sentinel.
-        let name = Updater::snapshot_dir_name(None);
-        assert!(name.starts_with("pre-update-fresh-"));
-        let ts_str = name.rsplit('-').next().unwrap();
-        assert!(ts_str.parse::<u64>().is_ok());
-    }
-
-    // --- restore_from_latest_backup + perform_launcher_rollback ---
-
-    #[test]
-    fn restore_from_latest_backup_errors_when_no_backups_dir() {
-        let install = TempDir::new().unwrap();
-        // No File-Backups/ created.
-        let result = Updater::new(install.path()).restore_from_latest_backup();
-        assert!(matches!(result, Err(UpdaterError::NotFound(_))));
-    }
-
-    #[test]
-    fn restore_from_latest_backup_errors_when_dir_empty() {
-        let install = TempDir::new().unwrap();
-        std::fs::create_dir_all(install.path().join("File-Backups")).unwrap();
-        let result = Updater::new(install.path()).restore_from_latest_backup();
-        assert!(matches!(result, Err(UpdaterError::NotFound(_))));
-    }
-
-    #[test]
-    fn restore_from_latest_backup_copies_newest_snapshot_overwriting_install() {
-        let install = TempDir::new().unwrap();
-        let root = install.path();
-
-        // Seed a live install with broken content (simulating post-bad-update).
-        let live_jar = root.join("launcher").join("app").join("launcher.jar");
-        std::fs::create_dir_all(live_jar.parent().unwrap()).unwrap();
-        std::fs::write(&live_jar, b"broken post-update content").unwrap();
-
-        // Seed TWO backup snapshots — older and newer. Lex sort on the
-        // timestamp suffix must pick the newer one even when it was
-        // written to disk first (no reliance on filesystem mtime).
-        let backups = root.join("File-Backups");
-        let older = backups.join("pre-update-v0.0.9-1000");
-        let newer = backups.join("pre-update-v0.1.0-2000");
-        let older_jar = older.join("launcher").join("app").join("launcher.jar");
-        let newer_jar = newer.join("launcher").join("app").join("launcher.jar");
-        std::fs::create_dir_all(older_jar.parent().unwrap()).unwrap();
-        std::fs::write(&older_jar, b"OLDER backup content - must NOT win").unwrap();
-        std::fs::create_dir_all(newer_jar.parent().unwrap()).unwrap();
-        std::fs::write(&newer_jar, b"NEWER backup content - expected result").unwrap();
-
-        let used = Updater::new(root).restore_from_latest_backup().unwrap();
-        assert_eq!(used.file_name().unwrap(), "pre-update-v0.1.0-2000");
-        let restored = std::fs::read(&live_jar).unwrap();
-        assert_eq!(restored, b"NEWER backup content - expected result");
-    }
-
-    #[test]
-    fn restore_from_latest_backup_creates_missing_install_subdirs() {
-        // Rollback path runs even when the broken install is so broken
-        // that some directories are missing — e.g. partial swap that
-        // crashed before creating leaf dirs. copy_tree_recursive must
-        // `create_dir_all` on demand, not assume pre-existence.
-        let install = TempDir::new().unwrap();
-        let root = install.path();
-
-        let backups = root.join("File-Backups");
-        let snap = backups.join("pre-update-v0.1.0-1000");
-        let deeply_nested = snap
-            .join("launcher")
-            .join("runtime")
-            .join("lib")
-            .join("modules");
-        std::fs::create_dir_all(deeply_nested.parent().unwrap()).unwrap();
-        std::fs::write(&deeply_nested, b"jre classes").unwrap();
-
-        Updater::new(root).restore_from_latest_backup().unwrap();
-        let dst = root.join("launcher").join("runtime").join("lib").join("modules");
-        assert_eq!(std::fs::read(&dst).unwrap(), b"jre classes");
-    }
-
-    #[test]
-    fn perform_launcher_rollback_is_a_thin_wrapper() {
-        // Convenience fn that `main.rs` calls — exercise the same happy
-        // path as the method form to guard against a refactor dropping
-        // the wrapper or changing its return type.
-        let install = TempDir::new().unwrap();
-        let root = install.path();
-        let snap = root.join("File-Backups").join("pre-update-v0.1.0-1000");
-        let seeded = snap.join("launcher").join("app.jar");
-        std::fs::create_dir_all(seeded.parent().unwrap()).unwrap();
-        std::fs::write(&seeded, b"rolled back").unwrap();
-
-        let path = perform_launcher_rollback(root).unwrap();
-        assert!(path.ends_with("pre-update-v0.1.0-1000"));
-        assert_eq!(
-            std::fs::read(root.join("launcher").join("app.jar")).unwrap(),
-            b"rolled back"
-        );
+    fn perform_launcher_rollback_errors_when_no_launcher_backup() {
+        // Bez żadnego backupu — nie ma czego rollbackować.
+        let tmp = tempdir().unwrap();
+        let err = perform_launcher_rollback(tmp.path()).unwrap_err();
+        assert!(matches!(err, UpdaterError::Manifest(_)));
     }
 }
