@@ -48,7 +48,9 @@ pub use error::{Result, UpdaterError};
 pub use i18n::{Lang, Strings};
 pub use launcher::{AutoUpdateState, CrashCounterKind};
 pub use ui::{states::UiState, AutoUpdateApp};
-pub use updater::Updater;
+// `Updater` struct usunięty w v1.2.1 — updater.rs teraz eksportuje wyłącznie
+// free functions dla bundle flow. Używaj `updater::{decide_update,
+// backup_launcher, rollback_launcher, extract_launcher_bundle, ...}`.
 // Asset intentionally NOT re-exported: external consumers reach it via
 // `release.assets` field access; adding it to the public root would widen
 // the API surface for zero gain.

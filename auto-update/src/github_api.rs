@@ -266,12 +266,15 @@ mod tests {
         )
     }
 
-    // Well-formed manifest content (matches manifest.rs test patterns).
+    // Well-formed manifest content — 3-package schema (matches manifest.rs
+    // test patterns post v1.2.0 refactor).
     const VALID_MANIFEST: &str = r#"{
         "version":"0.1.0","os":"windows","releasedAt":"2026-04-15T10:00:00Z",
         "minAutoUpdateVersion":"0.1.0","launcherExecutable":"launcher/SingularityMC.exe",
         "changelog":"- first release",
-        "files":[{"path":"launcher/app.jar","url":"https://example.com/app.jar","size":100,"sha256":"a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"}]
+        "launcher":{"url":"https://example.com/launcher.tar.gz","sha256":"0000000000000000000000000000000000000000000000000000000000000001","size":100},
+        "jre":{"url":"https://example.com/jre.tar.gz","sha256":"0000000000000000000000000000000000000000000000000000000000000002","size":200},
+        "autoUpdate":{"url":"https://example.com/au.exe","sha256":"0000000000000000000000000000000000000000000000000000000000000003","size":50,"version":"1.1.0"}
     }"#;
 
     #[tokio::test]
@@ -400,7 +403,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(manifest.version.as_str(), "0.1.0");
-        assert_eq!(manifest.files.len(), 1);
+        assert_eq!(manifest.launcher.size, 100);
+        assert_eq!(manifest.auto_update.version.as_str(), "1.1.0");
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ name = "singularitymc-auto-update"
 # → ten sam commit bumpuje version. 1.0.0 → 1.1.0 (minor: nowy feature —
 # tar.gz bundle extraction + 3-package manifest schema). 1.1.0 → 1.1.1
 # (patch: build.rs pre-release SemVer strip guard — hardening, no API change).
-version = "1.2.1"
+version = "1.2.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Auto-update bootstrap for the SingularityMC launcher"

@@ -42,7 +42,7 @@ use singularitymc_auto_update::launcher::{
     CrashCounterKind, LAUNCHER_CRASH_THRESHOLD, SELF_UPDATE_CRASH_THRESHOLD,
 };
 use singularitymc_auto_update::ui::{states::UiState, AutoUpdateApp};
-use singularitymc_auto_update::{config, launcher, manifest, self_update, updater};
+use singularitymc_auto_update::{config, launcher, self_update, updater};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -204,7 +204,7 @@ fn main() -> anyhow::Result<()> {
         // missing (rollback succeeded but manifest file was also lost),
         // surface FatalError — user needs to reinstall.
         if did_rollback {
-            match manifest::load_local(&install_dir_bg) {
+            match singularitymc_auto_update::Manifest::read_local(&install_dir_bg).ok().flatten() {
                 Some(local) => {
                     log::warn!(
                         "rolled back from crash loop; launching rolled-back version {}",
@@ -513,8 +513,8 @@ fn handle_launcher_crash_counter(install_dir: &PathBuf) -> bool {
          performing rollback from newest File-Backups snapshot"
     );
     match updater::perform_launcher_rollback(install_dir) {
-        Ok(snapshot) => {
-            log::warn!("rolled back launcher files from {}", snapshot.display());
+        Ok(()) => {
+            log::warn!("rolled back launcher files via .old/ siblings rename");
             if let Err(e) = launcher::reset_crash_counter(install_dir, CrashCounterKind::Launcher)
             {
                 log::warn!("reset launcher crash counter after rollback failed: {e}");

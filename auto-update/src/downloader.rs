@@ -42,8 +42,24 @@
 //! Content-Length header could briefly produce `downloaded > total` — UI
 //! should clamp the displayed ratio.
 
-use crate::manifest::FileEntry;
-use crate::{Result, Sha256, UpdaterError};
+use crate::{ManifestPath, Result, Sha256, UpdaterError};
+
+/// Opis pojedynczego download-target — url, hash oczekiwany, rozmiar
+/// deklarowany, i relative path (używany zarówno jako nazwa plik w
+/// `temp_dir` jak i identyfikator w `UpdaterError::HashMismatch`).
+/// Zastępuje legacy `FileEntry` z manifest.rs (usunięty w Task 3 refactor
+/// na 3-package). Pola zachowane dla minimalnego refactor w downloader.rs
+/// testach — same shape co stare FileEntry, tylko nowa nazwa typu.
+#[derive(Debug, Clone)]
+pub struct DownloadTarget {
+    /// Relative path within install_dir OR plain file name dla bundle
+    /// downloads (np. "launcher.tar.gz"). Walidowany przez ManifestPath
+    /// (no traversal, forward-slash).
+    pub path: ManifestPath,
+    pub url: String,
+    pub size: u64,
+    pub sha256: Sha256,
+}
 use rand::Rng;
 use reqwest::Client;
 use sha2::{Digest, Sha256 as Hasher};
@@ -117,7 +133,7 @@ impl Downloader {
     /// doc for retry, progress, durability contracts.
     pub async fn download_verified<F>(
         &self,
-        file: &FileEntry,
+        file: &DownloadTarget,
         mut progress: F,
     ) -> Result<PathBuf>
     where
@@ -127,7 +143,7 @@ impl Downloader {
             .file_name()
             .ok_or_else(|| {
                 UpdaterError::Manifest(format!(
-                    "FileEntry.path has no filename component: {}",
+                    "DownloadTarget.path has no filename component: {}",
                     file.path
                 ))
             })?;
@@ -224,7 +240,7 @@ impl Downloader {
 
     async fn attempt_download<F>(
         &self,
-        file: &FileEntry,
+        file: &DownloadTarget,
         dest: &Path,
         progress: &mut F,
     ) -> Result<()>
@@ -298,10 +314,10 @@ mod tests {
     use wiremock::matchers::{method, path as mock_path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// Build a FileEntry whose sha256 matches `bytes`.
-    fn file_entry(path: &str, url: &str, bytes: &[u8]) -> FileEntry {
+    /// Build a DownloadTarget whose sha256 matches `bytes`.
+    fn file_entry(path: &str, url: &str, bytes: &[u8]) -> DownloadTarget {
         let hash_hex = hex::encode(Hasher::digest(bytes));
-        FileEntry {
+        DownloadTarget {
             path: ManifestPath::parse(path).unwrap(),
             url: url.to_string(),
             size: bytes.len() as u64,
@@ -532,7 +548,7 @@ mod tests {
     async fn invalid_filename_path_returns_manifest_error() {
         let tmp = TempDir::new().unwrap();
         let dl = new_downloader(&tmp);
-        let file = FileEntry {
+        let file = DownloadTarget {
             path: ManifestPath::parse(".").unwrap(),
             url: "http://example.com/x".to_string(),
             size: 1,

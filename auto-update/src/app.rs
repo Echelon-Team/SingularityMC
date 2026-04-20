@@ -20,11 +20,11 @@
 //! pipeline is integration-level (real HTTP + filesystem) and covered
 //! by `tests/app_flow.rs` with wiremock.
 
-use crate::downloader::Downloader;
+use crate::downloader::{DownloadTarget, Downloader};
 use crate::github_api::{GitHubClient, Release};
-use crate::manifest::{self, FileEntry};
+use crate::manifest::Manifest;
 use crate::ui::states::UiState;
-use crate::updater::Updater;
+use crate::updater;
 use crate::{
     Channel, ManifestPath, OsTarget, Result, UpdaterError, Version,
 };
@@ -385,7 +385,7 @@ async fn handle_api_failure(
         // Refresh `local` per-iteration so late filesystem writes (user
         // drops a manifest from backup while we're parked) are picked
         // up on the next tick rather than frozen to the entry snapshot.
-        let local = manifest::load_local(&ctx.install_dir);
+        let local = Manifest::read_local(&ctx.install_dir).ok().flatten();
 
         // Transition rule — spec 4.x opcja 2:
         //  - first `API_FAILURES_BEFORE_OFFLINE_PROMPT` (3) retries stay
@@ -577,7 +577,7 @@ async fn park_on_download_failure(
         // Refresh local snapshot per-iteration — a user copy-pasting a
         // manifest from backup while we're parked should flip
         // has_offline: false → true on the next UI paint.
-        let local = manifest::load_local(&ctx.install_dir);
+        let local = Manifest::read_local(&ctx.install_dir).ok().flatten();
         let has_offline = local.is_some();
 
         // Compute sleep FIRST so the UI's `next_tick_at` matches the
@@ -714,56 +714,78 @@ async fn process_release(
     }
 
 
-    let local = manifest::load_local(&install_dir);
-    // `Option<&Version>` — `None` is "fresh install / nothing on disk".
-    // Kept as a borrow instead of cloning: passed straight into
-    // `updater.swap_files(... Option<&Version>)` without allocating.
+    let local = Manifest::read_local(&install_dir).ok().flatten();
     let old_version = local.as_ref().map(|m| &m.version);
-    let diff = manifest::diff_manifests(local.as_ref(), &remote);
+    let decision = updater::decide_update(&remote, local.as_ref());
 
-    if diff.is_empty() {
+    if !decision.any() {
         log::info!("already up-to-date at {}", remote.version);
         return Ok(remote.launcher_executable);
     }
 
     log::info!(
-        "updating {} -> {}: {} file(s) to download",
+        "updating {} -> {} (launcher={} jre={} auto_update={})",
         old_version_display(old_version),
         remote.version,
-        diff.len()
+        decision.launcher_needed,
+        decision.jre_needed,
+        decision.auto_update_needed,
     );
 
     // --- Download phase ---
-    let temp_dir = install_dir.join(".tmp-update");
-    // Clean any stale content from a crashed / interrupted prior run —
-    // `Downloader::new` only `create_dir_all`s, it doesn't truncate,
-    // so without this step a previous partial download could masquerade
-    // as a valid file and let the hash-verify step reject it every time.
+    // tmp/ lives pod install_dir (tar extract używa parent install_dir,
+    // więc wrapping dir w install_dir/ upraszcza cleanup na wykonanie).
+    let temp_dir = install_dir.join(crate::updater::TMP_DIR);
     let _ = std::fs::remove_dir_all(&temp_dir);
-    // RAII cleanup: guarantees the temp directory is removed on every
-    // exit from `process_release`, including the early-error `?` paths.
-    // Previously the cleanup at the end of the function was only reached
-    // on the happy path, leaking bytes to disk on every failed update
-    // (download 5xx, verify fail, install fail).
     let _temp_guard = TempDirGuard::new(temp_dir.clone());
     let downloader = Downloader::new(temp_dir.clone())?;
-    let total_bytes: u64 = diff.iter().map(|f| f.size).sum();
-    // `AtomicU64` instead of `Mutex<u64>`: the progress callback is
-    // called many times per downloaded file and a poisoned mutex (from a
-    // concurrent panic in the UI writer) would otherwise force every
-    // read to run `PoisonError::into_inner` or lose consistency. Atomic
-    // load/add is also cheaper and carries no poison state.
-    let downloaded_so_far = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let mut downloaded_files: Vec<(FileEntry, PathBuf)> = Vec::with_capacity(diff.len());
 
-    for file in &diff {
+    // Build download targets per decision. launcher.tar.gz + jre-<os>.tar.gz
+    // + auto-update-<os>.exe (gdy potrzebne). file_name = stąd asset name
+    // wyekstraktowany z URL, nie pełna ścieżka — wszystko idzie do tmp/.
+    let mut targets: Vec<DownloadTarget> = Vec::with_capacity(3);
+    if decision.launcher_needed {
+        targets.push(DownloadTarget {
+            path: ManifestPath::parse("launcher.tar.gz")?,
+            url: remote.launcher.url.clone(),
+            size: remote.launcher.size,
+            sha256: remote.launcher.sha256.clone(),
+        });
+    }
+    if decision.jre_needed {
+        let jre_name = match remote.os {
+            OsTarget::Windows => "jre-windows.tar.gz",
+            OsTarget::Linux => "jre-linux.tar.gz",
+        };
+        targets.push(DownloadTarget {
+            path: ManifestPath::parse(jre_name)?,
+            url: remote.jre.url.clone(),
+            size: remote.jre.size,
+            sha256: remote.jre.sha256.clone(),
+        });
+    }
+    if decision.auto_update_needed {
+        let au_name = match remote.os {
+            OsTarget::Windows => "auto-update-windows.exe",
+            OsTarget::Linux => "auto-update-linux",
+        };
+        targets.push(DownloadTarget {
+            path: ManifestPath::parse(au_name)?,
+            url: remote.auto_update.url.clone(),
+            size: remote.auto_update.size,
+            sha256: remote.auto_update.sha256.clone(),
+        });
+    }
+
+    let total_bytes: u64 = targets.iter().map(|t| t.size).sum();
+    let downloaded_so_far = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut downloaded_paths: Vec<(String, PathBuf)> = Vec::with_capacity(targets.len());
+
+    for target in &targets {
         let ds = Arc::clone(&downloaded_so_far);
         let s = Arc::clone(&state);
         let total_bytes_c = total_bytes;
         let progress = move |curr_file_bytes: u64, _file_total: u64| {
-            // `Relaxed` is enough here — this counter is observed only
-            // for UI rendering and is written from a single task at a
-            // time. No cross-thread ordering requirements on other data.
             let base = ds.load(std::sync::atomic::Ordering::Relaxed);
             let total_done = base + curr_file_bytes;
             let pct = progress_percent(total_done, total_bytes_c);
@@ -774,27 +796,53 @@ async fn process_release(
                 total_bytes: total_bytes_c,
             };
         };
-        let path = downloader.download_verified(file, progress).await?;
-        downloaded_so_far.fetch_add(file.size, std::sync::atomic::Ordering::Relaxed);
-        downloaded_files.push((file.clone(), path));
+        let path = downloader.download_verified(target, progress).await?;
+        downloaded_so_far.fetch_add(target.size, std::sync::atomic::Ordering::Relaxed);
+        downloaded_paths.push((target.path.as_str().to_string(), path));
     }
 
-    // --- Verify phase (brief UI state — actual hash check happens per
-    // file during download) ---
+    // --- Verify phase (sha256 już sprawdzone w download_verified,
+    // ale brief UI transition dla UX) ---
     set_state(&state, UiState::Verifying);
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // --- Install phase ---
     set_state(&state, UiState::Installing);
-    let updater = Updater::new(&install_dir);
-    updater.swap_files(&downloaded_files, old_version)?;
-    updater.write_local_manifest(&remote)?;
-    updater.write_version_file(&remote.version)?;
-    let _ = updater.cleanup_old_backups(crate::updater::DEFAULT_KEEP_BACKUPS);
 
-    // `_temp_guard` drops here and removes `.tmp-update/` — explicit
-    // cleanup removed because the RAII path covers success + every `?`
-    // early-exit above without duplicated code.
+    // Backup aktualnych instalacji (rename do .old/) przed extract, żeby
+    // crash counter mógł rollback. Tylko dla paczek które faktycznie
+    // pobieramy — jeśli jre nie zmieniło się, zostawiamy runtime/ w miejscu.
+    if decision.launcher_needed {
+        updater::backup_launcher(&install_dir)?;
+    }
+    if decision.jre_needed {
+        updater::backup_runtime(&install_dir)?;
+    }
+
+    // Extract tar.gz do install_dir/launcher/ + install_dir/runtime/.
+    // Dla auto-update (single exe, nie tar): copy z tmp/ do install_dir/.
+    for (name, path) in &downloaded_paths {
+        match name.as_str() {
+            "launcher.tar.gz" => updater::extract_launcher_bundle(path, &install_dir)?,
+            n if n.starts_with("jre-") => updater::extract_jre_bundle(path, &install_dir)?,
+            n if n.starts_with("auto-update") => {
+                // Stage new auto-update binary dla self-replace na next boot
+                // (self_update.rs handles actual swap). Zapisujemy pod
+                // install_dir/{filename}.new — `apply_pending` przy następnym
+                // starcie auto-update.exe zamienia w miejscu.
+                let target = install_dir.join(format!("{}.new", n));
+                std::fs::copy(path, &target).map_err(UpdaterError::Io)?;
+                log::info!("staged new auto-update binary at {}", target.display());
+            }
+            _ => log::warn!("unexpected download target {name}, skipping install"),
+        }
+    }
+
+    // Zaktualizuj local-manifest.json — snapshot aktualnego stanu
+    // instalacji (co user ma zainstalowane).
+    remote.write_local(&install_dir)?;
+
+    // `_temp_guard` drops here → usuwa tmp/.
     Ok(remote.launcher_executable)
 }
 
