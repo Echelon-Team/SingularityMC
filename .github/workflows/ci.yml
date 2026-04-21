@@ -4,9 +4,11 @@ name: Build SingularityMC
 
 on:
   push:
-    branches: [main, develop]
+    # Beta dodany żeby każdy push do naszego development branch'a triggerował
+    # pełen build + test gate przed tagowaniem prerelease (v*.*.*-rc.*).
+    branches: [main, develop, Beta]
   pull_request:
-    branches: [main]
+    branches: [main, Beta]
 
 jobs:
   build:
