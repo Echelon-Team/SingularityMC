@@ -91,7 +91,14 @@ impl UpdateDecision {
 
 /// Decyduje co pobrać na podstawie remote manifest vs local snapshot.
 ///
-/// - `local = None` (fresh install, brak `local-manifest.json`) → all three needed.
+/// - `local = None` (fresh install, brak `local-manifest.json`) →
+///   launcher + jre always needed (installer nie dostarcza ich — pobiera auto-
+///   update który ściąga resztę). Dla auto-update porównujemy `BUILD_VERSION`
+///   (currently running binary) vs `remote.auto_update.version` — jeśli
+///   matching, NIE pobieramy (installer already dostarczył bieżącą wersję).
+///   Bez tego filtering fresh install zawsze pobierał .new file identyczny
+///   bajt-po-bajcie z running binary, triggering `apply_pending` loop przy
+///   następnym boot (self_replace kopiuje source → target, source zostaje).
 /// - `local = Some(m)` → per-package compare:
 ///   - launcher / jre: sha256 `!=` (deterministic tar = same sha means same
 ///     content; downgrade sha też triggeruje download, co jest pożądane —
@@ -102,12 +109,40 @@ impl UpdateDecision {
 ///     quality-v1 review — wcześniej `!=` pozwalał downgrade silently.
 #[must_use]
 pub fn decide_update(remote: &Manifest, local: Option<&Manifest>) -> UpdateDecision {
+    decide_update_with_running(remote, local, &crate::Version::current())
+}
+
+/// Test-friendly core decyzji z jawnym `running_au` zamiast `BUILD_VERSION`.
+/// Production wrapper [`decide_update`] przekazuje `Version::current()`; testy
+/// dostają swobodę sterowania fresh-install edge case'ów bez hacka na
+/// `BUILD_VERSION` (który jest compile-time const z Cargo.toml).
+#[must_use]
+pub fn decide_update_with_running(
+    remote: &Manifest,
+    local: Option<&Manifest>,
+    running_au: &crate::Version,
+) -> UpdateDecision {
     match local {
-        None => UpdateDecision {
-            launcher_needed: true,
-            jre_needed: true,
-            auto_update_needed: true,
-        },
+        None => {
+            // Fresh install: porównaj running auto-update z
+            // `remote.auto_update.version`. Jeśli running >= remote, NIE
+            // stage'uj niepotrzebnego `.new`.
+            //
+            // Bez tego filtru fresh install zawsze pobierał .new identyczny
+            // bajt-po-bajcie z running binary (installer właśnie dostarczył
+            // tę samą wersję), triggering `apply_pending` loop przy
+            // następnym boot (self_replace copies source→target, source file
+            // zostaje, kolejne boot widzi .new → loop).
+            //
+            // Edge case: non-semver BUILD_VERSION → `is_older_than` fail-open
+            // (false). Safe default "nie pobieraj, running binary jest OK".
+            let auto_update_needed = running_au.is_older_than(&remote.auto_update.version);
+            UpdateDecision {
+                launcher_needed: true,
+                jre_needed: true,
+                auto_update_needed,
+            }
+        }
         Some(l) => UpdateDecision {
             launcher_needed: l.launcher.sha256 != remote.launcher.sha256,
             jre_needed: l.jre.sha256 != remote.jre.sha256,
@@ -385,13 +420,49 @@ mod tests {
     // --- decide_update ---
 
     #[test]
-    fn decide_update_fresh_install_all_needed() {
+    fn decide_update_fresh_install_all_needed_when_running_older() {
+        // Fresh install z running auto-update STARSZY niż remote → wszystkie
+        // trzy needed (installer dostarczył auto-update v1.0.0, manifest
+        // wymaga v1.1.0 — trzeba pobrać nowszy).
         let remote = dummy_manifest("1", "2", "1.1.0");
-        let decision = decide_update(&remote, None);
+        let running = Version::parse("1.0.0").unwrap();
+        let decision = decide_update_with_running(&remote, None, &running);
         assert!(decision.launcher_needed);
         assert!(decision.jre_needed);
         assert!(decision.auto_update_needed);
         assert!(decision.any());
+    }
+
+    #[test]
+    fn decide_update_fresh_install_skips_auto_update_when_running_matches() {
+        // Regression guard 2026-04-21: installer dostarczył auto-update w tej
+        // samej wersji co manifest.auto_update.version. Poprzednio
+        // auto_update_needed = true ZAWSZE na fresh install → pobierał
+        // identyczny binary jako .new → apply_pending loop (Bug A composed
+        // z Bug B). Fix: compare running vs remote, skip download gdy match.
+        let remote = dummy_manifest("1", "2", "1.3.3");
+        let running = Version::parse("1.3.3").unwrap();
+        let decision = decide_update_with_running(&remote, None, &running);
+        assert!(decision.launcher_needed);
+        assert!(decision.jre_needed);
+        assert!(
+            !decision.auto_update_needed,
+            "running AU == remote AU powinno wyłączyć pobieranie (fresh install no-op dla AU)"
+        );
+    }
+
+    #[test]
+    fn decide_update_fresh_install_skips_auto_update_when_running_newer() {
+        // Edge case: dev-installed running auto-update nowszy niż manifest
+        // (np. manual install nightly nad stable release). Downgrade-skip
+        // policy — monotonic version, nie pobieraj "starszego".
+        let remote = dummy_manifest("1", "2", "1.2.0");
+        let running = Version::parse("1.3.3").unwrap();
+        let decision = decide_update_with_running(&remote, None, &running);
+        assert!(
+            !decision.auto_update_needed,
+            "running newer than remote powinno NIE triggerować downgrade download"
+        );
     }
 
     #[test]

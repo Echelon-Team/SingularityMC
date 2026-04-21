@@ -272,7 +272,12 @@ async fn happy_path_transitions_to_updated() {
         ManifestConfig {
             version: "0.1.0",
             launcher_exe: "launcher/SingularityMC.exe",
-            au_version: "1.0.0",
+            // au_version > BUILD_VERSION — fresh install path w
+            // `decide_update_with_running` triggers auto_update_needed=true
+            // tylko gdy remote AU > running AU. 99.0.0 gwarantuje download-
+            // exercised niezależnie od bieżącej wersji Cargo.toml. Od 2026-04-21
+            // fix Bug A: fresh install z matching AU version = skip stage .new.
+            au_version: "99.0.0",
             min_auto_update_version: "0.1.0",
         },
     )
@@ -630,7 +635,12 @@ async fn api_auto_retries_on_second_tick_after_first_failure() {
         ManifestConfig {
             version: "0.1.0",
             launcher_exe: "launcher/SingularityMC.exe",
-            au_version: "1.0.0",
+            // au_version > BUILD_VERSION — fresh install path w
+            // `decide_update_with_running` triggers auto_update_needed=true
+            // tylko gdy remote AU > running AU. 99.0.0 gwarantuje download-
+            // exercised niezależnie od bieżącej wersji Cargo.toml. Od 2026-04-21
+            // fix Bug A: fresh install z matching AU version = skip stage .new.
+            au_version: "99.0.0",
             min_auto_update_version: "0.1.0",
         },
     )
@@ -1281,7 +1291,12 @@ async fn temp_dir_pre_clean_wipes_stale_content_on_entry() {
         ManifestConfig {
             version: "0.1.0",
             launcher_exe: "launcher/SingularityMC.exe",
-            au_version: "1.0.0",
+            // au_version > BUILD_VERSION — fresh install path w
+            // `decide_update_with_running` triggers auto_update_needed=true
+            // tylko gdy remote AU > running AU. 99.0.0 gwarantuje download-
+            // exercised niezależnie od bieżącej wersji Cargo.toml. Od 2026-04-21
+            // fix Bug A: fresh install z matching AU version = skip stage .new.
+            au_version: "99.0.0",
             min_auto_update_version: "0.1.0",
         },
     )

@@ -121,6 +121,27 @@ pub fn apply_pending() -> Result<bool> {
         current.display()
     );
 
+    // Usuwamy `.new` po successful swap — self-replace crate KOPIUJE source
+    // content do target (`current_exe`), NIE PRZENOSI. Bez explicit remove
+    // `.new` zostaje na dysku → następny boot widzi `.new` existujący →
+    // apply_pending znowu entry → self_replace no-op (same bytes) → exit →
+    // infinite respawn loop bez ever osiągnięcia eframe window. Empirycznie
+    // potwierdzone 2026-04-21 (beta branch diag): fresh install stworzył
+    // `.new` identyczne z running binary, kolejne boot'y loopowały self-replace
+    // aż crash counter triggerował rollback.
+    //
+    // `remove_file` best-effort: jeśli fail (AV lock, permission edge case),
+    // następny boot znowu trafi w loop, ale logujemy więc forensics wskaże
+    // przyczynę. W praktyce remove na freshly-renamed plik po self_replace
+    // rzadko fails.
+    if let Err(e) = std::fs::remove_file(&pending) {
+        log::warn!(
+            "failed to remove consumed pending file {} post-swap: {e} — \
+             next boot may re-enter apply_pending if cleanup didn't run",
+            pending.display()
+        );
+    }
+
     // Respawn with identical CLI args. Detach stdio + Windows console so
     // the replaced parent exiting doesn't tear down the child's handles.
     let mut cmd = std::process::Command::new(&current);
