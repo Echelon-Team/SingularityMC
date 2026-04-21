@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Polish string bundle.
 
 use super::Strings;

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 package com.singularity.agent
 
 import com.singularity.agent.bootstrap.CacheVersionManager

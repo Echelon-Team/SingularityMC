@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Release manifest types matching the `manifest-<os>.json` schema emitted
 //! przez Phase 3 release workflow (jeden manifest per release × OS).
 //!

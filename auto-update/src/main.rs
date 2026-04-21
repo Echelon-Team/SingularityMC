@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 // GUI subsystem on Windows: no attached conhost on double-click / shortcut
 // launch. Without this the binary runs as `console` subsystem — Explorer
 // spawns a fresh conhost that briefly flashes and, on some driver configs,

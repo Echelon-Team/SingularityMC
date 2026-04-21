@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 package com.singularity.agent.threading.chunk
 
 import com.singularity.agent.threading.memory.HeapMonitor

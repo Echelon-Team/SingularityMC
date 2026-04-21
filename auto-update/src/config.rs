@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Persistent runtime config for the auto-update binary. Lives at
 //! `{install_dir}/auto-update-config.json`.
 //!

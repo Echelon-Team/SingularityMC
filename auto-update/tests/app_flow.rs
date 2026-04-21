@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Integration tests for the state machine in `app::run_update_flow_with_config`.
 //!
 //! Covers the paths that `src/app.rs` unit tests cannot reach (because

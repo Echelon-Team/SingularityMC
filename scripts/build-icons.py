@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Echelon Team. All rights reserved.
+
 """Build installer icons from launcher Logo.
 
 Konwersja białego tła na alpha + produkcja dwóch artefaktów:

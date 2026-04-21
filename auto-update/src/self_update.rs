@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Self-replacement of the running auto-update binary.
 //!
 //! When the launcher update requires a newer auto-update binary itself

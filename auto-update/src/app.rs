@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! State machine glue — chains the earlier modules (github_api →
 //! downloader → updater → launcher) and drives the shared UI state.
 //!

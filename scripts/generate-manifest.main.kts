@@ -1,4 +1,6 @@
 #!/usr/bin/env kotlin
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //
 // Generuje manifest per-OS dla 3-package release flow (v1.2.x+).
 //

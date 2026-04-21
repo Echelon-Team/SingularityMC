@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Launcher spawner + crash-counter persistence.
 //!
 //! **Spawn:** [`spawn_launcher`] resolves the launcher executable via a

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Small shared primitives reused across the auto-update crate.
 //!
 //! Currently: atomic-file-write, used by `config::save` and

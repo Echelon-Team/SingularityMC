@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! File downloader with SHA-256 verification and exponential-backoff retry.
 //!
 //! Single call to [`Downloader::download_verified`]: stream one

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Echelon Team. All rights reserved.
+
 #
 # Packs launcher + JRE z Compose Desktop jpackage output do 2 tarballi
 # per OS, z deterministic flags — identyczne source = identyczny sha256

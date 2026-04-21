@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Echelon Team. All rights reserved.
+
 [versions]
 kotlin = "2.3.20"
 compose = "1.10.3"

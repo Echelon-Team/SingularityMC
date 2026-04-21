@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Echelon Team. All rights reserved.
+
 scenario: stress-dimensions
 timeout: 180s
 

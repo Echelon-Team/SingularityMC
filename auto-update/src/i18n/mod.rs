@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! UI strings for PL + EN. Selection flow:
 //!
 //! 1. Config holds [`LanguagePreference`](crate::LanguagePreference)

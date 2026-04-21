@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 package com.singularity.agent.threading.tick
 
 import com.singularity.agent.threading.config.ThreadingConfig

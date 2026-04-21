@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Echelon Team. All rights reserved.
+
 name: Release Build
 
 # Dwa formaty tagów uruchamiają ten workflow:

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Echelon Team. All rights reserved.
+
 #
 # Buduje `SingularityMC-Installer.AppImage` — universal Linux bootstrap
 # (Task 11). Bez wersji w nazwie — IMMUTABLE hash analogia do Windows

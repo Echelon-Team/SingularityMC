@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Embed the auto-update version string into the binary as `BUILD_VERSION`.
 //!
 //! Source: `CARGO_PKG_VERSION` = `[package].version` w `Cargo.toml`.

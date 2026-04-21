@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 package com.singularity.launcher.ui.screens.servers
 
 import androidx.compose.foundation.clickable

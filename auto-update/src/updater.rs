@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Bundle-based updater: sha256 compare, download coordination, backup,
 //! extract, rollback. Zastępuje per-file flow z v1.0.x (`swap_files` +
 //! `cleanup_orphans` + `copy_tree_recursive`) — patrz commit 23f2960 oraz

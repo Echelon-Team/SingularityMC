@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Echelon Team. All rights reserved.
+
 ; SingularityMC Universal Installer (Inno Setup script)
 ;
 ; 🔴 KRYTYCZNE — ten skrypt po pierwszym stable release MUSI być

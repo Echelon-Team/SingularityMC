@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Auto-update library — all application logic lives here so integration tests
 //! under `tests/` can target it. The binary entry point (`src/main.rs`) is a
 //! thin shim that boots logging, parses CLI args, and calls into this crate.

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Integration smoke test — pins the build.rs ↔ main.rs contract so a future
 //! refactor cannot silently break version embedding (e.g. deleting the
 //! `println!("cargo:rustc-env=BUILD_VERSION=...")` line would still let the

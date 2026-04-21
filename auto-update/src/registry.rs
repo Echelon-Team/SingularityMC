@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Windows Registry updates dla post-auto-update Control Panel metadata.
 //!
 //! **Problem:** Inno Setup installer zapisuje `DisplayVersion` w HKCU

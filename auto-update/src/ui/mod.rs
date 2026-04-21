@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! egui UI for the auto-update binary — 9 mutually-exclusive states
 //! (per spec 4.x) displayed in a single center-aligned panel.
 //!

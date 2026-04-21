@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! UI state enum driving [`AutoUpdateApp`](super::AutoUpdateApp) rendering.
 //!
 //! One variant per mutually-exclusive user-visible screen (per spec 4.x).

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Library-level error taxonomy. Every Phase 2 module returns
 //! [`Result<T, UpdaterError>`], so the top-level state machine and UI layer
 //! get a single exhaustive `match` point for localized messages and retry

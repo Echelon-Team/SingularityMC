@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Echelon Team. All rights reserved.
+
 //! Tar+gzip archive extraction helper. Streams decompression + unpack
 //! w jednym kroku — bez intermediate buffer pełnego pliku w pamięci.
 //!
