@@ -5,12 +5,12 @@ package com.singularity.agent.cache
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.name
 import kotlin.io.path.readBytes
-import kotlin.io.path.writeBytes
 
 /**
  * Disk cache dla zremapowanych (i transformowanych) klas.
@@ -61,11 +61,87 @@ class TransformCache(private val cacheRoot: Path) {
 
     /**
      * Zapisuje zremapowany bytecode do cache.
+     *
+     * **First-writer-wins atomic write** (concurrent safety regression
+     * SingularityTransformerTest 2026-04-21): pisze do sibling temp file,
+     * potem `Files.move` z `ATOMIC_MOVE` (bez REPLACE_EXISTING). Gdy
+     * inny wątek zdążył wpisać ten sam target — łapiemy
+     * `FileAlreadyExistsException` i traktujemy jako SUCCESS (transform jest
+     * deterministic: same input = same output = byte-equivalent cached copy).
+     *
+     * Dlaczego NIE `REPLACE_EXISTING` + `ATOMIC_MOVE` razem: Windows mapuje to
+     * na `MoveFileEx(MOVEFILE_WRITE_THROUGH | MOVEFILE_REPLACE_EXISTING)`, ale
+     * pod heavy concurrent replace (10 wątków dla tego samego target) Windows
+     * driver reject'uje subsequent moves z `AccessDenied` / `FileSystemException`
+     * zanim handle previous move jest fully released. Empirycznie zobserwowane
+     * 2026-04-21 na lokalnym Windows stress test (9/10 wątków success, 1 rzucał).
+     *
+     * First-writer-wins eliminuje problem: tylko jeden wątek commits, reszta
+     * wycofuje się cicho. Zero overwrite contention, zero partial writes (atomic
+     * move gwarantuje all-or-nothing visibility).
+     *
+     * Plik wyjściowy zawsze będzie miał PEŁNY content (nigdy partial) —
+     * reader przez `get()` widzi albo brak pliku, albo complete bytes od
+     * zwycięskiego wątku.
+     *
+     * Windows NTFS: ATOMIC_MOVE = `MoveFileEx(MOVEFILE_WRITE_THROUGH)`, atomic.
+     * Linux: `rename(2)` atomic per POSIX dla same-filesystem.
+     *
+     * Temp file MUSI być w tym samym filesystemie co target (stąd
+     * `createTempFile(classFile.parent, ...)` — sibling guarantee).
+     *
+     * Na failed write/move cleanup temp file żeby nie zostawić orphan
+     * w cache dir.
      */
     fun put(jarHash: String, classInternalName: String, bytes: ByteArray) {
         val classFile = cacheRoot.resolve(jarHash).resolve("$classInternalName.class")
         Files.createDirectories(classFile.parent)
-        classFile.writeBytes(bytes)
+
+        // Fast path: plik już istnieje (np. z poprzedniego wątku) — skip write.
+        // Transform deterministic = content identyczny = pomijanie bezpieczne.
+        // Nie-atomic check (TOCTOU) ale harmless: gdy race na exists/write
+        // wystąpi, dolna logika złapie `FileAlreadyExistsException`.
+        if (Files.exists(classFile)) return
+
+        val tmpFile = Files.createTempFile(
+            classFile.parent,
+            "${classInternalName.substringAfterLast('/')}-",
+            ".tmp"
+        )
+        try {
+            Files.write(tmpFile, bytes)
+            try {
+                Files.move(tmpFile, classFile, StandardCopyOption.ATOMIC_MOVE)
+            } catch (e: java.nio.file.FileSystemException) {
+                // Racing threads dla tego samego klucza mogą zobaczyć:
+                //  - `FileAlreadyExistsException` (POSIX standard zachowanie
+                //     ATOMIC_MOVE gdy target istnieje) — jeden wygrał, my drudzy
+                //  - `AccessDeniedException` (Windows specific) — target
+                //     istnieje, ALE NTFS trzyma handle lock od file close
+                //     previous wątku (Sub 2b learnings #14 NTFS lock delay)
+                //
+                // W obu przypadkach: jeśli target widoczny w filesystemie,
+                // inny wątek SKUTECZNIE wpisał content (transform deterministic
+                // → byte-equivalent). Drop temp, success path.
+                //
+                // Jeśli target NIE istnieje — to prawdziwy IO problem
+                // (permissions, dysk pełny, path invalid), rzut.
+                if (Files.exists(classFile)) {
+                    Files.deleteIfExists(tmpFile)
+                } else {
+                    throw e
+                }
+            }
+        } catch (e: Exception) {
+            // Cleanup temp na każdym innym fail path — bez tego cache dir
+            // zapełniałby się orphan .tmp.
+            try {
+                Files.deleteIfExists(tmpFile)
+            } catch (cleanupErr: Exception) {
+                logger.warn("Failed to cleanup orphan temp file {}: {}", tmpFile, cleanupErr.message)
+            }
+            throw e
+        }
     }
 
     /**
