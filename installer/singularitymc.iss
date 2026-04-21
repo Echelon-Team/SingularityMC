@@ -92,12 +92,13 @@ Root: HKCU; Subkey: "Software\Classes\singularitymc\shell\open\command"; ValueTy
 ; Auto-start (gdy task `autostart` wybrany).
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
-; UWAGA: brak [Run] sekcji intencjonalnie.
-; [Run] odpala się PRZED `CurStepChanged(ssPostInstall)` event, a Pascal
-; download auto-update.exe musi być w ssPostInstall (po [Files]) bo wcześniej
-; {app} może jeszcze nie istnieć. Gdybyśmy dali [Run] tu — próbował by
-; odpalić auto-update.exe który jeszcze nie został pobrany.
-; Rozwiązanie: spawn przez Pascal `Exec()` na końcu CurStepChanged(ssPostInstall).
+[Run]
+; [Run] entries bez flagi execute PRZED ssPostInstall (gdy plik jeszcze
+; nie pobrany) — tu używamy `postinstall` flag który przenosi execution
+; na Finished wizard page (PO ssPostInstall download). User widzi checkbox
+; "Uruchom SingularityMC" domyślnie zaznaczony. `nowait` = nie blokuje
+; wizard close. `skipifsilent` = /SILENT install pomija checkbox entirely.
+Filename: "{app}\{#MyAppExeName}"; Description: "Uruchom {#MyAppName}"; Flags: postinstall nowait skipifsilent
 
 [UninstallDelete]
 ; Post-install state który auto-update i launcher produkują — usuwany
@@ -130,15 +131,14 @@ const
   AUTO_UPDATE_URL = 'https://github.com/Echelon-Team/SingularityMC/releases/latest/download/auto-update-windows.exe';
 
 // Pascal code wywołane w ssPostInstall — PO [Files] (icon + config
-// skopiowane, {app} istnieje), PRZED instalator się zamknie.
-// Web-research-v1 potwierdził: to jest RIGHT place (ssPostInstall po [Files],
-// nie ssInstall przed). Po download spawn auto-update.exe via Exec()
-// (bez [Run] żeby uniknąć ordering confusion).
+// skopiowane, {app} istnieje), PRZED wizard Finished page. Pobiera
+// auto-update.exe do {app}. Spawn robi [Run] postinstall (wyżej),
+// który odpala się gdy user klika Finish na Finished page — checkbox
+// dostępny do odznaczenia jeśli user NIE chce automatycznego uruchomienia.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   DestFile: String;
   TempFile: String;
-  ResultCode: Integer;
 begin
   if CurStep = ssPostInstall then begin
     DestFile := ExpandConstant('{app}\auto-update.exe');
@@ -168,19 +168,6 @@ begin
         'Sprawdź uprawnienia dostępu do ' + ExpandConstant('{app}'),
         mbError, MB_OK);
       Abort;
-    end;
-
-    // Spawn auto-update.exe — zastępuje legacy [Run] sekcję.
-    // nowait: nie blokujemy wizard close. Exec return value to bool
-    // (started) — jeśli fail (brak uprawnień, file corrupt), info via
-    // MsgBox ale install consider completed (użytkownik sam kliknie skrót).
-    if not WizardSilent then begin
-      if not Exec(DestFile, '', '', SW_SHOWNORMAL, ewNoWait, ResultCode) then begin
-        MsgBox(
-          'Instalacja zakończona, ale nie udało się automatycznie uruchomić ' +
-          '{#MyAppName}. Kliknij skrót na pulpicie / menu Start żeby uruchomić ręcznie.',
-          mbInformation, MB_OK);
-      end;
     end;
   end;
 end;

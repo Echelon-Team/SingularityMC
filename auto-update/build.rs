@@ -39,21 +39,20 @@ fn main() {
         // utrudnia diagnozowanie który build jest zainstalowany u usera.
         //
         // `CARGO_PKG_VERSION` = ten sam field z [package]::version
-        // z Cargo.toml (np. "1.1.0"). Windows StringFileInfo oczekuje
-        // 4-part numeric format (major.minor.patch.build); dopełniamy
-        // zerem dla build.
+        // z Cargo.toml (np. "1.3.1").
+        //
+        // VS_FIXEDFILEINFO (binary 4×u16 FileMajorPart/MinorPart/BuildPart/
+        // PrivatePart) ZAWSZE musi mieć 4 części — Windows API wymaga.
+        // winres auto-setuje z CARGO_PKG_VERSION_MAJOR/MINOR/PATCH + 0 jako
+        // revision. Ale DISPLAYED string w Explorer → Właściwości → Szczegóły
+        // bierze się z StringFileInfo "FileVersion" entry który jest wolnym
+        // stringiem. Ustawiamy go na czysty SemVer "x.y.z" bez trailing ".0"
+        // żeby user widział tożsamą wartość z Cargo.toml (Mateusz feedback
+        // 2026-04-21: "1.3.1.0 to nie jest wersja SemVer").
         //
         // SemVer pre-release/build-metadata suffixes (`-rc.1`, `+build.123`)
         // MUSZĄ być obcięte bo StringFileInfo parser Windows je odrzuca
-        // jako invalid. VS_FIXEDFILEINFO (numeric 4×u16) i tak je ignoruje
-        // — winres auto-setuje FIXEDFILEINFO z CARGO_PKG_VERSION_MAJOR/
-        // MINOR/PATCH (zweryfikowane: Get-Item exe.VersionInfo zwraca
-        // poprawne FileMajorPart/MinorPart/BuildPart nawet bez explicit
-        // `set_version_info` call), więc obcięcie stringa synchronizuje
-        // oba warstwy.
-        //
-        // Debug-time assertion: panic na build gdy base nie jest 3-part
-        // numeric — lepszy early fail niż milcząco broken VersionInfo.
+        // jako invalid. Debug-time assertion pilnuje 3-part numeric shape.
         let raw_version = env!("CARGO_PKG_VERSION");
         let base_version = raw_version.split(['-', '+']).next().unwrap_or(raw_version);
         let parts: Vec<&str> = base_version.split('.').collect();
@@ -61,9 +60,10 @@ fn main() {
             parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
             "CARGO_PKG_VERSION base '{base_version}' (from '{raw_version}') must be numeric 3-part 'x.y.z'"
         );
-        let file_version = format!("{base_version}.0");
-        res.set("FileVersion", &file_version);
-        res.set("ProductVersion", &file_version);
+        // StringFileInfo display — 3-part SemVer (Explorer pokazuje to).
+        // FIXEDFILEINFO numeric — pozostawiamy winres auto (4-part 'x.y.z.0').
+        res.set("FileVersion", base_version);
+        res.set("ProductVersion", base_version);
         res.set("ProductName", "SingularityMC Auto-Update");
         res.set("FileDescription", "SingularityMC auto-update daemon");
         res.set("CompanyName", "Echelon Team");
