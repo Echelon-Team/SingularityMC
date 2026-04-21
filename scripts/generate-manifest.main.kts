@@ -93,15 +93,16 @@ fun sha256(path: Path): String {
 }
 
 // Launcher executable relative path w install_dir. Compose Desktop
-// `nativeDistributions.packageName` steruje nazwą binarki:
-//   Windows (global packageName = "SingularityMC") → SingularityMC.exe
-//     w root folderze aplikacji (nie bin/)
-//   Linux  (Linux override packageName = "singularitymc" lowercase) →
-//     bin/singularitymc
+// `createDistributable` zawsze używa GLOBAL `nativeDistributions.packageName`
+// dla app-image layout (Linux `packageName` override dotyczy tylko .deb/
+// .rpm package name, nie jpackage output dir/binary name — potwierdzone
+// empirycznie 2026-04-21 via Linux CI diagnostic dump).
+//   Windows: SingularityMC.exe w root folderze aplikacji (jpackage Win layout)
+//   Linux:   bin/SingularityMC (jpackage Linux layout)
 // Rust auto-update używa tego dla `launcher::spawn` po extract.
 val launcherExecutable = when (osSuffix) {
     "windows" -> "launcher/SingularityMC.exe"
-    "linux" -> "launcher/bin/singularitymc"
+    "linux" -> "launcher/bin/SingularityMC"
     else -> error("unreachable (require check above)")
 }
 
