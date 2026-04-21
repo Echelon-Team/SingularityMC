@@ -266,6 +266,19 @@ jobs:
         # Nowy 3-package model: ~5 assetów per OS (było ~250 per-file).
         # Matrix build step już pack'uje i nazywa assety canonicznie —
         # release job tylko kopiuje z artifacts/ do release/.
+        #
+        # WAŻNE o path structure: actions/upload-artifact@v4 PRESERVE'UJE
+        # directory structure relative do common root wszystkich `path:`
+        # entries. Matrix build step uploaduje `release/*` + `installer/*`
+        # (dwa różne prefixy) więc common root = repo root, a artifact
+        # zawiera paths `release/launcher-<os>.tar.gz`, `installer/
+        # SingularityMC-Installer.exe` itd. Po download-artifact z `path:
+        # artifacts/` faktyczne lokalizacje to:
+        #   artifacts/build-<os>/release/<bundle-asset>
+        #   artifacts/build-<os>/installer/SingularityMC-Installer.{exe,AppImage}
+        # Guards i cp'y korzystają z tych ścieżek. Confirmed empirycznie
+        # 2026-04-21 — pierwsza wersja bez prefiksów wywalała `set -e`
+        # na guard-miss.
         run: |
           set -euo pipefail
           mkdir -p release/
@@ -275,7 +288,7 @@ jobs:
           # hardcoded w installer Pascal + AppRun shell.
           for OS in windows linux; do
               for ASSET in launcher-$OS.tar.gz jre-$OS.tar.gz manifest-$OS.json; do
-                  SRC="artifacts/build-$OS/$ASSET"
+                  SRC="artifacts/build-$OS/release/$ASSET"
                   if [ ! -f "$SRC" ]; then
                       echo "::error::missing $SRC — upstream build-$OS job failed" >&2
                       exit 1
@@ -285,30 +298,30 @@ jobs:
           done
 
           # Auto-update binaries (per-OS rename już done w matrix).
-          if [ ! -f artifacts/build-windows/auto-update-windows.exe ]; then
-              echo "::error::missing auto-update-windows.exe" >&2
+          if [ ! -f artifacts/build-windows/release/auto-update-windows.exe ]; then
+              echo "::error::missing artifacts/build-windows/release/auto-update-windows.exe" >&2
               exit 1
           fi
-          cp artifacts/build-windows/auto-update-windows.exe release/
-          if [ ! -f artifacts/build-linux/auto-update-linux ]; then
-              echo "::error::missing auto-update-linux" >&2
+          cp artifacts/build-windows/release/auto-update-windows.exe release/
+          if [ ! -f artifacts/build-linux/release/auto-update-linux ]; then
+              echo "::error::missing artifacts/build-linux/release/auto-update-linux" >&2
               exit 1
           fi
-          cp artifacts/build-linux/auto-update-linux release/
+          cp artifacts/build-linux/release/auto-update-linux release/
 
           # Installer (Windows) + AppImage (Linux) — universal names bez
           # wersji. Hash MUSI być stały per project_installer_hash_stability
           # memory rule (SmartScreen reputation bez code signing).
-          if [ ! -f artifacts/build-windows/SingularityMC-Installer.exe ]; then
+          if [ ! -f artifacts/build-windows/installer/SingularityMC-Installer.exe ]; then
               echo "::error::Windows installer missing — iscc failed upstream" >&2
               exit 1
           fi
-          cp artifacts/build-windows/SingularityMC-Installer.exe release/
-          if [ ! -f artifacts/build-linux/SingularityMC-Installer.AppImage ]; then
+          cp artifacts/build-windows/installer/SingularityMC-Installer.exe release/
+          if [ ! -f artifacts/build-linux/installer/SingularityMC-Installer.AppImage ]; then
               echo "::error::Linux AppImage missing — build-appimage.sh failed upstream" >&2
               exit 1
           fi
-          cp artifacts/build-linux/SingularityMC-Installer.AppImage release/
+          cp artifacts/build-linux/installer/SingularityMC-Installer.AppImage release/
 
           echo "--- Release assets ($(ls release/ | wc -l) files) ---"
           ls -lah release/
