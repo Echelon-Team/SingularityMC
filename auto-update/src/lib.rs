@@ -37,6 +37,7 @@ pub mod github_api;
 pub mod i18n;
 pub mod launcher;
 pub mod manifest;
+pub mod registry;
 pub mod self_update;
 pub mod ui;
 pub mod updater;

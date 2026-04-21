@@ -51,6 +51,12 @@ SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\icon.ico
+; Bez tego Inno automatycznie składa DisplayName jako "{AppName} (wersja
+; {AppVersion})" — "SingularityMC (wersja 1.0.0)" dla frozen universal
+; installer co wygląda brzydko w Panel Sterowania → Programy i Funkcje
+; (user spodziewa się prostej "SingularityMC"). UninstallDisplayName jawnie
+; nadpisuje auto-construct — czysty AppName bez wersji w nazwie.
+UninstallDisplayName={#MyAppName}
 AllowNoIcons=yes
 
 [Languages]

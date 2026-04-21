@@ -921,6 +921,21 @@ async fn process_release(
     // transactional filesystem.
     remote.write_local(&install_dir)?;
 
+    // Control Panel → Programy i Funkcje `DisplayVersion` refresh.
+    // Installer Inno zapisał "1.0.0" (frozen universal installer AppVersion),
+    // user spodziewa się realnej wersji launchera. Best-effort: registry
+    // write fail NIE blokuje ani nie rollbackuje udanego update — user
+    // ma działający launcher, cosmetic metadata mismatch tylko.
+    // No-op na Linux (brak Windows Registry).
+    if let Err(e) =
+        crate::registry::update_uninstall_display_version(&remote.version.to_string())
+    {
+        log::warn!(
+            "registry DisplayVersion update failed ({e}); Panel Sterowania \
+             może pokazywać stary numer wersji, ale install jest poprawny"
+        );
+    }
+
     // `_temp_guard` drops here → usuwa tmp/.
     Ok(remote.launcher_executable)
 }
