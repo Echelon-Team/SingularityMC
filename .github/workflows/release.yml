@@ -339,7 +339,11 @@ jobs:
         with:
           files: release/*
           prerelease: ${{ env.IS_PRERELEASE }}
-          # Tag name automatycznie z GITHUB_REF, name (tytuł release)
-          # taki sam. Release body pozostaje puste — Mateusz dopisuje
-          # changelog post-tworzeniu (lub automatyzacja w przyszłej
-          # iteracji via `generate_release_notes: true`).
+          # GitHub auto-generuje changelog z commits między ostatnim a
+          # nowym tagiem (API `/repos/.../releases/generate-notes`). Bez
+          # tego `body` response = null → launcher news feed crashuje na
+          # deserializacji (ReleaseInfo.changelog non-nullable, empirycznie
+          # potwierdzone 2026-04-21). Z włączonym auto-gen każdy release
+          # ma strukturę "## What's Changed\n* commit msg by @author...".
+          # User widzi prawdziwy changelog w Aktualności.
+          generate_release_notes: true

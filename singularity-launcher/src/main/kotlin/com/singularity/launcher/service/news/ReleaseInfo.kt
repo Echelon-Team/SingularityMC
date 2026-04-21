@@ -24,7 +24,14 @@ import java.time.ZoneId
 data class ReleaseInfo(
     @SerialName("tag_name") val tagName: String,
     @SerialName("name") val name: String,
-    @SerialName("body") val changelog: String,
+    // Default empty string bo GitHub Release API zwraca `"body": null` gdy
+    // release był stworzony bez explicit body (np. softprops/action-gh-release
+    // bez `body:` parameter). Bez defaultu kotlinx-serialization rzuca
+    // SerializationException na null → NewsRepository łapie w catch(Exception)
+    // → zwraca emptyList() → UI pokazuje "brak aktualności" dla KAŻDEGO
+    // release bez treści (empirycznie zaobserwowane 2026-04-21: wszystkie 5
+    // naszych stable releases miały body=null, news feed zawsze pusty).
+    @SerialName("body") val changelog: String = "",
     @SerialName("prerelease") val isPrerelease: Boolean,
     @SerialName("published_at")
     @Serializable(with = InstantSerializer::class)
