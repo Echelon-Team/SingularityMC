@@ -41,7 +41,13 @@ cp installer/singularitymc.png "$APPDIR/singularitymc.png"
 
 mkdir -p installer
 OUTPUT="installer/SingularityMC-Installer.AppImage"
-appimagetool --no-appstream "$APPDIR" "$OUTPUT"
+# ARCH=x86_64 jawnie — appimagetool standardowo sniffuje architekturę
+# z ELF binarek w AppDir, ale nasz AppDir zawiera TYLKO shell script +
+# .desktop + PNG (no binary — AppRun pobiera auto-update przy pierwszym
+# uruchomieniu). Bez ARCH env var tool wali "Unable to guess architecture".
+# Hardcoded x86_64 bo release flow CI jest ubuntu-latest (amd64 runner);
+# arm64 AppImage-y to future work z osobnym matrix entry.
+ARCH=x86_64 appimagetool --no-appstream "$APPDIR" "$OUTPUT"
 
 echo "AppImage created: $OUTPUT"
 ls -lh "$OUTPUT"
