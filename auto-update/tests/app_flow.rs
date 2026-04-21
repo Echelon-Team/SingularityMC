@@ -438,6 +438,17 @@ async fn exhausted_retries_with_local_manifest_offers_offline() {
     // not just the terminal state. Without the `seen_no_internet` pin a
     // future refactor that skips straight to OfflineAvailable would
     // pass the happy-path-lite check silently.
+    //
+    // `yield_now()` zamiast `sleep(10ms)`: sleep-based polling flaky na CI
+    // (Windows runner 2026-04-21) — bg task potrafił pomiędzy kolejnymi
+    // 10ms-polls zrobić wiele iteracji retry loop (`retry_interval_secs: 0`
+    // w test_config eliminuje sleep między iteracjami) i NoInternet →
+    // OfflineAvailable przejście mieściło się w <10ms → test nigdy nie
+    // łapał NoInternet → assertion fail. Yield-based polling ping-ponguje
+    // z bg task na `current_thread` scheduler — każdy yield pozwala bg
+    // zrobić jedną iterację i emit state transition, potem test observer
+    // zgarnia nowy stan. Deterministyczne w stosunku do scheduler steps,
+    // nie wall-clock.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut seen_no_internet = false;
     loop {
@@ -456,7 +467,7 @@ async fn exhausted_retries_with_local_manifest_offers_offline() {
                 *state.lock().unwrap()
             );
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
     }
     assert!(
         seen_no_internet,
@@ -525,6 +536,11 @@ async fn exhausted_retries_without_local_manifest_is_fatal() {
 
 /// Helper: poll `state` until it reaches `target_state` matcher,
 /// panicking if `deadline` elapses. Returns early if the matcher hits.
+///
+/// `yield_now()` zamiast `sleep(10ms)` — patrz komentarz w
+/// `exhausted_retries_with_local_manifest_offers_offline` (flaky Windows
+/// CI fix 2026-04-21). Ping-pong z bg task dzięki `current_thread` scheduler
+/// catches every state transition, nie tylko stany "wall-clock > 10ms".
 async fn wait_for_state_matching<F: Fn(&UiState) -> bool>(
     state: &Arc<Mutex<UiState>>,
     matches_fn: F,
@@ -541,7 +557,7 @@ async fn wait_for_state_matching<F: Fn(&UiState) -> bool>(
                 *state.lock().unwrap()
             );
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
     }
 }
 
