@@ -137,7 +137,23 @@ fun App() {
     val httpClient = remember {
         HttpClient(CIO) {
             install(ContentNegotiation) {
-                json(Json { ignoreUnknownKeys = true; encodeDefaults = true })
+                // `coerceInputValues = true` — gdy wire JSON ma explicit `null`
+                // dla pola z default value w data class (np. GitHub Release
+                // `body: null` vs `ReleaseInfo.changelog: String = ""`),
+                // kotlinx-serialization DOMYŚLNIE rzuca JsonDecodingException
+                // z komunikatem "Expected string literal but 'null' was found
+                // at path X". Error message wprost wskazuje ten fix. Default
+                // value sam w data class NIE wystarcza — trzeba JAWNIE wyrazić
+                // zgodę na coerce'owanie null → default. Regression 2026-04-21:
+                // news feed crashował całą deserializację releases[] na
+                // pierwszym release z body=null (wszystkie nasze stable
+                // releases go mają) → ViewModel widział emptyList →
+                // FetchFailed state ("Nie udało się pobrać aktualności").
+                json(Json {
+                    ignoreUnknownKeys = true
+                    encodeDefaults = true
+                    coerceInputValues = true
+                })
             }
         }
     }
